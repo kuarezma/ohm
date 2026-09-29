@@ -32,7 +32,7 @@ import Testing
         #expect(abs(r.cpuJ - 1.5) < 1e-12)
         #expect(abs(r.dramJ - 0.25) < 1e-12)
         #expect(r.aneJ == 0)
-        #expect(r.residency == ClusterResidency(pActive: 0.2, eActive: 1.0))
+        #expect(r.residency == ClusterResidency(pActiveRatio: 0.2, eActiveRatio: 1.0))
     }
 
     @Test func missingChannelsGiveNil() {

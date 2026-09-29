@@ -190,8 +190,8 @@ public final class AttributionResolver {
             return .userApp
         }
         let systemRoots = ["/System/", "/usr/", "/Library/Apple/", "/bin/", "/sbin/", "/private/", "/Library/Developer/CommandLineTools/"]
-        if systemRoots.contains(where: { p.hasPrefix($0) }) { return .systemService }
-        if let bundleID, bundleID.hasPrefix("com.apple.") { return .systemService }
+        if systemRoots.contains(where: { p.hasPrefix($0) }) { return .macOSService }
+        if let bundleID, bundleID.hasPrefix("com.apple.") { return .macOSService }
         return .userApp
     }
 }

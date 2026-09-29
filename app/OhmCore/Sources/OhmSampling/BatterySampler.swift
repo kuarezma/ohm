@@ -2,6 +2,11 @@ import Foundation
 import IOKit
 import OhmModel
 
+extension BatteryState {
+    /// No battery present (desktop Mac) or the gauge could not be read.
+    public static let unavailable = BatteryState(source: .unknown, percent: 0, voltage_mV: 0, amperage_mA: 0)
+}
+
 /// Raw `AppleSmartBattery` registry values (M3 / macOS 27 key layout, T-010 and T-021).
 public struct SmartBatterySnapshot: Sendable, Equatable {
     public var externalConnected: Bool?

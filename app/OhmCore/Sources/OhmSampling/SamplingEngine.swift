@@ -174,8 +174,8 @@ public actor SamplingEngine: SamplingEngineProtocol {
         }
         let power = SystemPower(cpuP: seconds > 0 ? pJ / seconds : 0, cpuE: seconds > 0 ? eJ / seconds : 0,
                                 gpu: component.gpuWatts, systemLoad: systemLoad.watts,
-                                systemSource: systemLoad.source, systemLoadAge: systemLoad.age,
-                                clusterActive: component.residency)
+                                systemLoadAge: systemLoad.age, clusterActive: component.residency,
+                                systemSource: systemLoad.source)
         return SampleTick(wallClock: wallClock, interval: interval, system: power, burst: component.burst,
                           battery: battery, thermal: thermal, processes: deltas, unreadable: unreadable)
     }

@@ -56,13 +56,13 @@ final class FakeProcessSampler: ProcessEnergySampling {
     let deltas: [ProcessDelta]
     init(deltas: [ProcessDelta]) { self.deltas = deltas }
     func sample() -> (deltas: [ProcessDelta], unreadable: UnreadableSummary) {
-        (deltas, UnreadableSummary(readable: deltas.count, unreadable: 3, vanished: 0))
+        (deltas, UnreadableSummary(readableCount: deltas.count, unreadableCount: 3))
     }
 }
 
 final class FakeComponent: ComponentSampling {
     func sample() -> (gpuWatts: Double?, residency: ClusterResidency?, burst: EnergyBurst?) {
-        (0.25, ClusterResidency(pActive: 0.5, eActive: 0.25), nil)
+        (0.25, ClusterResidency(pActiveRatio: 0.5, eActiveRatio: 0.25), nil)
     }
 }
 
@@ -88,5 +88,5 @@ final class FakeBattery: BatterySampling {
 
 func delta(pid: Int32, energy: UInt64, p: UInt64) -> ProcessDelta {
     ProcessDelta(identity: ProcessIdentity(pid: pid, startAbsTime: 1), app: AppKey(kind: .executableName, value: "x\(pid)"),
-                 displayName: "x", bundlePath: nil, category: .userApp, energy_nJ: energy, pEnergy_nJ: p, cpuTime_ns: 0)
+                 energy_nJ: energy, pEnergy_nJ: p, cpuTime_ns: 0)
 }

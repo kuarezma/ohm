@@ -58,7 +58,7 @@ import Testing
         m.spiAvailable = false
         let a = resolve(201, m)
         #expect(a.key == AppKey(kind: .executableName, value: "com.apple.WebKit.WebContent"))
-        #expect(a.category == .systemService)
+        #expect(a.category == .macOSService)
     }
 
     @Test func terminalLaunchedNodeKeepsItsOwnRowAcrossVersions() {
@@ -103,12 +103,12 @@ import Testing
     }
 
     @Test(arguments: [
-        ("/usr/libexec/trustd", nil, AppCategory.systemService),
-        ("/System/Cryptexes/App/usr/libexec/SafariNotificationAgent", nil, .systemService),
-        ("/Library/Apple/System/Library/foo", nil, .systemService),
+        ("/usr/libexec/trustd", nil, AppCategory.macOSService),
+        ("/System/Cryptexes/App/usr/libexec/SafariNotificationAgent", nil, .macOSService),
+        ("/Library/Apple/System/Library/foo", nil, .macOSService),
         ("/System/Applications/Mail.app", "com.apple.mail", .userApp),
         ("/Applications/Xcode.app", "com.apple.dt.Xcode", .userApp),
-        ("/Library/PrivilegedHelperTools/X.app", "com.apple.fake", .systemService),
+        ("/Library/PrivilegedHelperTools/X.app", "com.apple.fake", .macOSService),
         ("/usr/local/bin/python3", nil, .userApp),
         ("/Users/u/bin/tool", nil, .userApp),
     ] as [(String, String?, AppCategory)])

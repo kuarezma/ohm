@@ -167,7 +167,7 @@ public final class ProcessEnergySampler: ProcessEnergySampling {
         refreshDeniedIfDue(now: now)
         let pids = source.listPIDs()
         var deltas: [ProcessDelta] = []
-        var readable = 0, unreadable = 0, vanished = 0, reads = 0
+        var readable = 0, unreadable = 0, reads = 0
         var live = Set<ProcessIdentity>()
         live.reserveCapacity(pids.count)
 
@@ -183,7 +183,7 @@ public final class ProcessEnergySampler: ProcessEnergySampling {
                 denied[pid] = scan
                 unreadable += 1
             case .gone:
-                vanished += 1
+                break
             case .counters(let current):
                 readable += 1
                 let identity = ProcessIdentity(pid: pid, startAbsTime: current.startAbs)
@@ -197,10 +197,11 @@ public final class ProcessEnergySampler: ProcessEnergySampling {
                 }
                 guard !delta.isZero else { continue }
                 let who = resolver.resolve(identity)
-                deltas.append(ProcessDelta(identity: identity, app: who.key, displayName: who.displayName,
-                                           bundlePath: who.bundlePath, category: who.category,
-                                           energy_nJ: delta.energy_nJ, pEnergy_nJ: delta.pEnergy_nJ,
-                                           cpuTime_ns: timebase.nanoseconds(delta.cpuTicks)))
+                deltas.append(ProcessDelta(identity: identity, app: who.key, energy_nJ: delta.energy_nJ,
+                                           pEnergy_nJ: delta.pEnergy_nJ,
+                                           cpuTime_ns: timebase.nanoseconds(delta.cpuTicks),
+                                           displayName: who.displayName, bundlePath: who.bundlePath,
+                                           category: who.category))
             }
         }
 
@@ -210,7 +211,7 @@ public final class ProcessEnergySampler: ProcessEnergySampling {
         resolver.prune(keeping: live)
         previousSampleAbs = now
         lastScanReads = reads
-        return (deltas, UnreadableSummary(readable: readable, unreadable: unreadable, vanished: vanished))
+        return (deltas, UnreadableSummary(readableCount: readable, unreadableCount: unreadable))
     }
 
     private func refreshDeniedIfDue(now: UInt64) {

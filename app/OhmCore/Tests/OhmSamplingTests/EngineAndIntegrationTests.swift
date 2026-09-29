@@ -9,19 +9,19 @@ import Testing
                       delta(pid: 2, energy: 1_000_000_000, p: 0)]
         let tick = SamplingEngine.makeTick(
             wallClock: Date(), interval: .seconds(2), deltas: deltas,
-            unreadable: UnreadableSummary(readable: 2, unreadable: 1, vanished: 0),
+            unreadable: UnreadableSummary(readableCount: 2, unreadableCount: 1),
             component: (0.5, nil, nil), systemLoad: (4, .systemLoad, .seconds(3)),
             battery: .unavailable, thermal: .nominal)
         #expect(tick.system.cpuP == 1.0)   // 2 J / 2 s
         #expect(tick.system.cpuE == 1.0)   // (1 J + 1 J) / 2 s
         #expect(tick.system.gpu == 0.5 && tick.system.systemLoad == 4)
-        #expect(tick.processes.count == 2 && tick.unreadable.unreadable == 1)
+        #expect(tick.processes.count == 2 && tick.unreadable.unreadableCount == 1)
     }
 
     @Test func zeroIntervalDoesNotDivideByZero() {
         let tick = SamplingEngine.makeTick(
             wallClock: Date(), interval: .zero, deltas: [delta(pid: 1, energy: 10, p: 5)],
-            unreadable: UnreadableSummary(readable: 1, unreadable: 0, vanished: 0),
+            unreadable: UnreadableSummary(readableCount: 1, unreadableCount: 0),
             component: (nil, nil, nil), systemLoad: (nil, .none, nil), battery: .unavailable, thermal: .nominal)
         #expect(tick.system.cpuP == 0 && tick.system.cpuE == 0)
     }
@@ -44,7 +44,7 @@ import Testing
         #expect(tick?.thermal == .fair)
         #expect(tick?.battery.percent == 80)
         #expect(tick?.system.systemSource == .systemLoad)
-        #expect(tick?.system.clusterActive == ClusterResidency(pActive: 0.5, eActive: 0.25))
+        #expect(tick?.system.clusterActive == ClusterResidency(pActiveRatio: 0.5, eActiveRatio: 0.25))
         #expect((tick?.system.systemLoadAge ?? .zero) >= .seconds(4))
         #expect(loadCalls.count == 1 && batteryCalls.count == 1)  // three ticks within 10 s → one read
         #expect(await engine.tickCount == 3)
@@ -87,11 +87,11 @@ struct LiveIntegrationTests {
         let top = try #require(deltas.max { $0.energy_nJ < $1.energy_nJ })
         #expect(top.identity.pid == yes.processIdentifier)
         #expect(top.app == AppKey(kind: .executableName, value: "yes"))
-        #expect(top.category == .systemService)         // /usr/bin
+        #expect(top.category == .macOSService)         // /usr/bin
         #expect(Double(top.energy_nJ) / 1.5e9 > 0.5)    // one busy core: watts, not milliwatts
         #expect(top.cpuTime_ns > 1_000_000_000)         // ~1.5 s of CPU in 1.5 s
-        #expect(summary.readable > 10)
-        print("T-021 live: yes \(Double(top.energy_nJ) / 1.5e9) W, readable \(summary.readable), EPERM \(summary.unreadable), reads \(sampler.lastScanReads)")
+        #expect(summary.readableCount > 10)
+        print("T-021 live: yes \(Double(top.energy_nJ) / 1.5e9) W, readable \(summary.readableCount), EPERM \(summary.unreadableCount), reads \(sampler.lastScanReads)")
     }
 
     /// ADR 0001 § 1: dlopen must resolve libIOReport from the dyld shared cache.
@@ -103,7 +103,7 @@ struct LiveIntegrationTests {
         let (gpu, residency, _) = sampler.sample()
         #expect(gpu != nil)
         #expect(residency != nil)
-        print("T-021 live: gpu \(gpu ?? -1) W, P act \(residency?.pActive ?? -1), E act \(residency?.eActive ?? -1)")
+        print("T-021 live: gpu \(gpu ?? -1) W, P act \(residency?.pActiveRatio ?? -1), E act \(residency?.eActiveRatio ?? -1)")
     }
 
     @Test func batteryGaugeReadable() {

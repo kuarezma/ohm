@@ -52,7 +52,8 @@ typedef struct {
 /// Opens a subscription and takes the first (baseline) sample. NULL on failure; `err` gets the stage.
 ohm_ior *ohm_ior_open(int *err);
 void ohm_ior_close(ohm_ior *h);
-/// Takes a sample and writes the delta against the previous one. Returns the number of channels
+/// Takes a sample and writes the delta against the previous one: every "CPU Stats" state channel and
+/// the "Energy Model" channels GPU Energy, CPU Energy, DRAM and ANE. Returns the number of channels
 /// written (at most `cap`) or -1; `dt_abs` gets the mach-absolute interval between the samples.
 int ohm_ior_sample(ohm_ior *h, ohm_ior_channel *out, int cap, uint64_t *dt_abs);
 

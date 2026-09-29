@@ -65,7 +65,7 @@ import Testing
         let (deltas, summary) = s.sample()
         #expect(deltas.count == 1)
         #expect(deltas[0].energy_nJ == 4_000 && deltas[0].pEnergy_nJ == 3_000 && deltas[0].cpuTime_ns == 300)
-        #expect(summary == UnreadableSummary(readable: 1, unreadable: 0, vanished: 0))
+        #expect(summary == UnreadableSummary(readableCount: 1, unreadableCount: 0))
     }
 
     @Test func idleProcessesAreNotEmitted() {
@@ -76,7 +76,7 @@ import Testing
         src.clock += 1_000
         let (deltas, summary) = s.sample()
         #expect(deltas.isEmpty)
-        #expect(summary.readable == 1)
+        #expect(summary.readableCount == 1)
     }
 
     @Test func epermIsCountedAndNotRetriedWhileAlive() {
@@ -86,7 +86,7 @@ import Testing
         let s = makeSampler(src)
         for _ in 0..<3 {
             let (_, summary) = s.sample()
-            #expect(summary.unreadable == 1 && summary.readable == 1)
+            #expect(summary.unreadableCount == 1 && summary.readableCount == 1)
             src.clock += 1_000
         }
         #expect(src.reads[1] == 1)       // one syscall, then skipped
@@ -102,7 +102,7 @@ import Testing
         _ = s.sample()
         src.set(1, energy: 50, start: 5)  // pid reused by a readable process
         let (_, summary) = s.sample()
-        #expect(summary.readable == 1 && summary.unreadable == 0)
+        #expect(summary.readableCount == 1 && summary.unreadableCount == 0)
         #expect(src.reads[1] == 2)
     }
 
@@ -116,11 +116,11 @@ import Testing
         #expect(src.reads[1] == 2)
     }
 
-    @Test func goneBetweenListAndReadIsVanished() {
+    @Test func goneBetweenListAndReadIsNotCounted() {
         let src = FakeCounterSource()
         src.table[7] = .gone
         let (_, summary) = makeSampler(src).sample()
-        #expect(summary == UnreadableSummary(readable: 0, unreadable: 0, vanished: 1))
+        #expect(summary == UnreadableSummary(readableCount: 0, unreadableCount: 0))
     }
 
     @Test func pidReuseBetweenTicksBillsNewProcessFromZero() {

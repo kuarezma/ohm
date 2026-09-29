@@ -76,8 +76,8 @@ public enum IOReportDecoder {
             }
         }
         if sawResidency {
-            r.residency = ClusterResidency(pActive: pTotal > 0 ? Double(pActive) / Double(pTotal) : 0,
-                                           eActive: eTotal > 0 ? Double(eActive) / Double(eTotal) : 0)
+            r.residency = ClusterResidency(pActiveRatio: pTotal > 0 ? Double(pActive) / Double(pTotal) : 0,
+                                           eActiveRatio: eTotal > 0 ? Double(eActive) / Double(eTotal) : 0)
         }
         return r
     }

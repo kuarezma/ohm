@@ -120,6 +120,18 @@ static void cstr(CFStringRef s, char *buf, size_t n) {
     if (!s || !CFStringGetCString(s, buf, (CFIndex)n, kCFStringEncodingUTF8)) buf[0] = 0;
 }
 
+// Idle states of a CPU core performance-state channel (T-010/T-012): everything else is active.
+static int is_idle_state(CFStringRef s) {
+    return s && (CFEqual(s, CFSTR("IDLE")) || CFEqual(s, CFSTR("OFF")) || CFEqual(s, CFSTR("DOWN")));
+}
+
+// "Energy Model" channels Swift decodes; the other ~70 (per-core, SRAM, SoC blocks) are skipped
+// here without string conversion, which is most of the per-sample cost.
+static int is_wanted_energy_channel(CFStringRef name) {
+    return name && (CFEqual(name, CFSTR("GPU Energy")) || CFEqual(name, CFSTR("CPU Energy")) ||
+                    CFEqual(name, CFSTR("DRAM")) || CFEqual(name, CFSTR("ANE")));
+}
+
 ohm_ior *ohm_ior_open(int *err) {
     pthread_once(&g_ior_once, load_ioreport);
     if (g_ior_status != OHM_IOR_OK) { if (err) *err = g_ior_status; return NULL; }
@@ -134,6 +146,19 @@ ohm_ior *ohm_ior_open(int *err) {
     }
     CFMutableDictionaryRef desired = CFDictionaryCreateMutableCopy(NULL, 0, em);
     CFRelease(em);
+    // Subscribe only to the channels that are decoded: sampling cost scales with channel count.
+    CFArrayRef all = CFDictionaryGetValue(desired, CFSTR("IOReportChannels"));
+    if (all && CFGetTypeID(all) == CFArrayGetTypeID()) {
+        CFMutableArrayRef keep = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+        for (CFIndex i = 0; i < CFArrayGetCount(all); i++) {
+            CFDictionaryRef ch = CFArrayGetValueAtIndex(all, i);
+            CFStringRef group = ior.ChannelGetGroup(ch);
+            if ((group && CFEqual(group, CFSTR("CPU Stats"))) || is_wanted_energy_channel(ior.ChannelGetChannelName(ch)))
+                CFArrayAppendValue(keep, ch);
+        }
+        if (CFArrayGetCount(keep) > 0) CFDictionarySetValue(desired, CFSTR("IOReportChannels"), keep);
+        CFRelease(keep);
+    }
     CFMutableDictionaryRef subbed = NULL;
     IOReportSubscriptionRef sub = ior.CreateSubscription(NULL, desired, &subbed, 0, NULL);
     CFRelease(desired);
@@ -161,11 +186,6 @@ void ohm_ior_close(ohm_ior *h) {
     free(h);
 }
 
-// Idle states of a CPU core performance-state channel (T-010/T-012): everything else is active.
-static int is_idle_state(const char *s) {
-    return !strcmp(s, "IDLE") || !strcmp(s, "OFF") || !strcmp(s, "DOWN");
-}
-
 int ohm_ior_sample(ohm_ior *h, ohm_ior_channel *out, int cap, uint64_t *dt_abs) {
     if (!h) return -1;
     CFDictionaryRef cur = ior.CreateSamples(h->sub, h->subbed, NULL);
@@ -189,19 +209,21 @@ int ohm_ior_sample(ohm_ior *h, ohm_ior_channel *out, int cap, uint64_t *dt_abs) 
     CFIndex count = arr ? CFArrayGetCount(arr) : 0;
     for (CFIndex i = 0; i < count && n < cap; i++) {
         CFDictionaryRef ch = CFArrayGetValueAtIndex(arr, i);
+        CFStringRef group = ior.ChannelGetGroup(ch);
+        CFStringRef name = ior.ChannelGetChannelName(ch);
+        int is_state = group && CFEqual(group, CFSTR("CPU Stats"));
+        if (!is_state && !is_wanted_energy_channel(name)) continue;
         ohm_ior_channel *c = &out[n];
         memset(c, 0, sizeof *c);
-        cstr(ior.ChannelGetGroup(ch), c->group, sizeof c->group);
-        cstr(ior.ChannelGetChannelName(ch), c->name, sizeof c->name);
-        if (!strcmp(c->group, "CPU Stats")) {
+        cstr(group, c->group, sizeof c->group);
+        cstr(name, c->name, sizeof c->name);
+        if (is_state) {
             c->is_state = 1;
             int32_t states = ior.StateGetCount(ch);
             for (int32_t k = 0; k < states; k++) {
-                char s[32];
-                cstr(ior.StateGetNameForIndex(ch, k), s, sizeof s);
                 int64_t r = ior.StateGetResidency(ch, k);
                 c->total += r;
-                if (!is_idle_state(s)) c->active += r;
+                if (!is_idle_state(ior.StateGetNameForIndex(ch, k))) c->active += r;
             }
         } else {
             cstr(ior.ChannelGetUnitLabel(ch), c->unit, sizeof c->unit);

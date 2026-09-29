@@ -106,6 +106,8 @@ public struct SystemPower: Sendable, Equatable {
     public var systemLoad: Double?
     public var systemLoadAge: Duration?
     public var clusterActive: ClusterResidency?
+    /// Which source `systemLoad` came from: SystemLoad, or V × I while discharging (ADR 0002 § 5 `sys_src`).
+    public var systemSource: SystemEnergySource
 
     public init(
         cpuP: Double,
@@ -113,7 +115,8 @@ public struct SystemPower: Sendable, Equatable {
         gpu: Double? = nil,
         systemLoad: Double? = nil,
         systemLoadAge: Duration? = nil,
-        clusterActive: ClusterResidency? = nil
+        clusterActive: ClusterResidency? = nil,
+        systemSource: SystemEnergySource? = nil
     ) {
         self.cpuP = cpuP
         self.cpuE = cpuE
@@ -121,6 +124,7 @@ public struct SystemPower: Sendable, Equatable {
         self.systemLoad = systemLoad
         self.systemLoadAge = systemLoadAge
         self.clusterActive = clusterActive
+        self.systemSource = systemSource ?? (systemLoad != nil ? .systemLoad : .none)
     }
 }
 
@@ -130,19 +134,29 @@ public struct ProcessDelta: Sendable, Equatable {
     public var energy_nJ: UInt64
     public var pEnergy_nJ: UInt64
     public var cpuTime_ns: UInt64
+    /// Ledger `app.display_name`, `app.bundle_path`, `app.category`; only AttributionResolver knows them.
+    public var displayName: String
+    public var bundlePath: String?
+    public var category: AppCategory
 
     public init(
         identity: ProcessIdentity,
         app: AppKey,
         energy_nJ: UInt64,
         pEnergy_nJ: UInt64,
-        cpuTime_ns: UInt64
+        cpuTime_ns: UInt64,
+        displayName: String? = nil,
+        bundlePath: String? = nil,
+        category: AppCategory = .userApp
     ) {
         self.identity = identity
         self.app = app
         self.energy_nJ = energy_nJ
         self.pEnergy_nJ = pEnergy_nJ
         self.cpuTime_ns = cpuTime_ns
+        self.displayName = displayName ?? app.value
+        self.bundlePath = bundlePath
+        self.category = category
     }
 }
 
