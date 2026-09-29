@@ -22,7 +22,10 @@ let package = Package(
             name: "OhmModel"
         ),
         .target(
-            name: "COhmSys"
+            name: "COhmSys",
+            linkerSettings: [
+                .linkedFramework("CoreFoundation")
+            ]
         ),
         .target(
             name: "OhmSampling",
@@ -76,6 +79,10 @@ let package = Package(
         .testTarget(
             name: "OhmModelTests",
             dependencies: ["OhmModel"]
+        ),
+        .testTarget(
+            name: "OhmSamplingTests",
+            dependencies: ["OhmSampling", "OhmModel"]
         ),
         .testTarget(
             name: "OhmLedgerTests",
