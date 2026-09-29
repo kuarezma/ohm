@@ -155,12 +155,17 @@ Olaylar 250 ms içinde birleştirilir (coalescing). Motor her değerlendirmede `
 Bir uygulama için sıralama `none < eCore < freeze` şeklindedir.
 
 1. **Birleşim:** Uygulamaya yönelik istekler bütün aktif kural katkıları ve elle yapılan katkılar üzerinden toplanır. Governor bu kümeden, güvenlik vetosuna (ADR 0004) takılmayan **en yüksek** etkiyi uygular. Dondurma veto edilirse (ör. uygulama ses çalıyor), aynı uygulama için E-core da istenmişse E-core uygulanır. İstenmemişse hiçbir şey uygulanmaz. Veto, gerekçesiyle birlikte arayüzde görünür. Dondurmanın yerine sessizce E-core konmaz; kural yazarı ikisini birlikte istediyse ikisi de uygulanır.
-2. **Aynı etki, birden çok kaynak:** Etki, onu isteyen son kaynak kalkana kadar sürer. Örneğin iki kural Chrome'u E-core'da tutuyorsa, biri bittiğinde Chrome E-core'da kalır.
-3. **Elle iptal her zaman kazanır.** Kullanıcı kural tarafından yönetilen bir uygulamayı elle çözerse veya E-core'dan çıkarırsa, **kural yeniden kurulana kadar** bir bastırma kaydı oluşur. Bu kayıt, o an etkiyi isteyen kuralların o uygulamaya yönelik katkısını bastırır ve ilgili kural bir kez `inactive` olup yeniden `active` olana kadar sürer. Kullanıcının kararı bir sonraki değerlendirmede ezilmez.
-4. **Elle uygulama:** Kullanıcı popover'da [E] düğmesine basarsa `manual` kaynaklı bir katkı eklenir. Bu katkı kullanıcı onu kaldırana veya uygulama kapanana kadar sürer. Elle yapılan dondurma, uygulama aktive edilince biter. Hiçbir katkı Ohm yeniden başladıktan sonra geri gelmez (ADR 0004'teki değişmez); açılışta kurallar yeniden değerlendirilir, elle katkılar sıfırlanır.
-5. **Aktivasyonda çözme** kural semantiğinin değil güvenliğin parçasıdır. Aktive edilen donuk uygulama her koşulda çözülür. Governor bu uygulamayı, uygulama yeniden `refreezeGrace` süresi boyunca (varsayılan 10 dk) gizli kalana kadar tekrar dondurmaz (ADR 0004). Kural hâlâ aktif olsa bile bu geçerlidir.
-6. **`eCore(whileFrontmost: .release)`:** Hedef uygulama öne geldiğinde E-core politikası geçici olarak kaldırılır. Uygulama öne gelmeyi bırakıp `frontmostApp` gecikmesi (2 sn) dolunca politika yeniden uygulanır.
-7. **Deterministik sıra:** Bildirim metinleri ve rapor satırları kural `id`'sine göre sıralanır. Katkılar küme olarak birleştiği için kuralların değerlendirme sırası sonucu etkilemez.
+2. **Parametrelerin birleşimi (deterministik, en sıkı güvenlik kazanır):** `DesiredEffect` eylem parametrelerini taşır (ADR 0001 § 2). Aynı uygulamaya birden çok katkı geldiğinde:
+   - `freeze.minHiddenSeconds` = katkıların **en büyüğü**, en az genel alt sınır 300 sn. Elle dondurmanın kendi değeri 0'dır; ancak aynı anda bir kural da dondurma istiyorsa kuralın değeri geçerli olur.
+   - `eCore.whileFrontmost` = katkılardan biri `.release` ise `.release`. `.keep` ancak bütün katkılar `.keep` ise geçerli olur.
+   - Birleşim sırası sonucu etkilemez (max ve "herhangi biri release" değişmeli ve birleşmeli işlemlerdir). Bir katkı kalkınca parametreler kalan katkılardan yeniden hesaplanır.
+3. **Aynı etki, birden çok kaynak:** Etki, onu isteyen son kaynak kalkana kadar sürer. Örneğin iki kural Chrome'u E-core'da tutuyorsa, biri bittiğinde Chrome E-core'da kalır.
+4. **Elle iptal her zaman kazanır.** Kullanıcı kural tarafından yönetilen bir uygulamayı elle çözerse veya E-core'dan çıkarırsa, **kural yeniden kurulana kadar** bir bastırma kaydı oluşur. Bu kayıt, o an etkiyi isteyen kuralların o uygulamaya yönelik katkısını bastırır ve ilgili kural bir kez `inactive` olup yeniden `active` olana kadar sürer. Kullanıcının kararı bir sonraki değerlendirmede ezilmez.
+5. **Elle uygulama:** Kullanıcı popover'da [E] düğmesine basarsa `manual` kaynaklı bir katkı eklenir. Bu katkı kullanıcı onu kaldırana veya uygulama kapanana kadar sürer. Elle yapılan dondurma, uygulama aktive edilince biter. Hiçbir katkı Ohm yeniden başladıktan sonra geri gelmez (ADR 0004'teki değişmez); açılışta kurallar yeniden değerlendirilir, elle katkılar sıfırlanır.
+6. **Aktivasyonda çözme** kural semantiğinin değil güvenliğin parçasıdır. Aktive edilen donuk uygulama her koşulda çözülür. Governor bu uygulamayı, uygulama yeniden `refreezeGrace` süresi boyunca (varsayılan 10 dk) gizli kalana kadar tekrar dondurmaz (ADR 0004). Kural hâlâ aktif olsa bile bu geçerlidir.
+7. **`eCore(whileFrontmost: .release)`:** Hedef uygulama öne geldiğinde E-core politikası geçici olarak kaldırılır. Uygulama öne gelmeyi bırakıp `frontmostApp` gecikmesi (2 sn) dolunca politika yeniden uygulanır.
+8. **Otomatik gizleme (D9, ADR 0004):** `freeze` eylemi, uygulama önde değilse ve `minHiddenSeconds` boyunca ön plana gelmediyse uygulanır. Uygulamanın o an gizli olması **gerekmez**: Ohm uygulamayı önce kendisi gizler (`hide()`), sonra dondurur. Bu, arka plandaki görünür pencerelerin (ikinci ekrandaki bir pencere dahil) kaybolması demektir. Bu yüzden onay ekranı ve kural özeti her `freeze` için "Ohm {uygulama}'yı gizler, sonra dondurur" cümlesini içerir. Dondurma başarısız olursa, uygulama Ohm tarafından gizlendiyse yeniden gösterilir (ADR 0004 § 4).
+9. **Deterministik sıra:** Bildirim metinleri ve rapor satırları kural `id`'sine göre sıralanır. Katkılar küme olarak birleştiği için kuralların değerlendirme sırası sonucu etkilemez.
 
 ### 4. Doğal dil şeması (`@Generable`)
 
@@ -185,8 +190,15 @@ struct GeneratedRule {
     var match: GeneratedMatch
     @Guide(.minimumCount(1), .maximumCount(4))
     var conditions: [GeneratedCondition]
+    @Guide(description: "Dondurmadan önce uygulamanın ön plana gelmemiş olması gereken dakika ('10 dakika sonra' = 10). Cümlede yoksa boş.")
+    var freezeAfterMinutes: Int?                         // RuleCompiler: 5…240, aksi halde unsupported
+    @Guide(description: "E-core'daki uygulama öne gelince: release = geçici olarak bırak, keep = E-core'da tut. Cümlede yoksa boş.")
+    var whileFrontmost: GeneratedFrontmost?
+    @Guide(description: "Cümlenin bu yapıyla ifade EDİLEMEYEN kısımları, kelimesi kelimesine: iç içe 've/veya', desteklenmeyen koşul, eylem veya süre. Hepsi ifade edilebiliyorsa boş dizi.")
+    var unsupported: [String]
 }
 
+@Generable enum GeneratedFrontmost { case release, keep }
 @Generable enum GeneratedAction { case eCore, freeze, notify }
 @Generable enum GeneratedMatch { case all, any }
 @Generable enum GeneratedThermal { case fair, serious, critical }
@@ -226,7 +238,7 @@ Modelin ürettiği yapının JSON karşılığı (JSON Schema 2020-12). Değerle
   "$id": "https://kuarezma.github.io/ohm/schema/generated-rule.v1.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "targetApps", "targetRunaway", "actions", "match", "conditions"],
+  "required": ["name", "targetApps", "targetRunaway", "actions", "match", "conditions", "unsupported"],
   "properties": {
     "name":          { "type": "string", "minLength": 1, "maxLength": 60 },
     "targetApps":    { "type": "array", "items": { "type": "string", "minLength": 1 }, "maxItems": 5 },
@@ -234,7 +246,10 @@ Modelin ürettiği yapının JSON karşılığı (JSON Schema 2020-12). Değerle
     "actions":       { "type": "array", "items": { "enum": ["eCore", "freeze", "notify"] },
                        "minItems": 1, "maxItems": 3, "uniqueItems": true },
     "match":         { "enum": ["all", "any"] },
-    "conditions":    { "type": "array", "minItems": 1, "maxItems": 4, "items": { "$ref": "#/$defs/condition" } }
+    "conditions":    { "type": "array", "minItems": 1, "maxItems": 4, "items": { "$ref": "#/$defs/condition" } },
+    "freezeAfterMinutes": { "type": "integer", "minimum": 5, "maximum": 240 },
+    "whileFrontmost":     { "enum": ["release", "keep"] },
+    "unsupported":        { "type": "array", "items": { "type": "string", "minLength": 1 } }
   },
   "$defs": {
     "condition": {
@@ -265,15 +280,41 @@ Modelin ürettiği yapının JSON karşılığı (JSON Schema 2020-12). Değerle
 }
 ```
 
+**Derleyicinin sonucu (`RuleDraft`):**
+
+```swift
+public enum RuleDraft: Sendable {
+    case ready(Rule)                                         // onay ekranına gider; enabled = false
+    case needsClarification(Rule, questions: [Clarification])  // belirsiz uygulama adı, pil kapsamı (kural 2) vb.
+    case unsupported(phrases: [String])                     // kural ÜRETİLMEZ; ifade edilemeyen kısımlar gösterilir
+}
+```
+
+**Hiçbir zaman sessizce zayıflatma yok.** Cümlenin bir kısmı ifade edilemiyorsa derleyici o kısmı atıp daha gevşek bir kural üretmez. Örneğin "10 dakika sonra" cümlede geçip de kuralda 5 dakikalık varsayılan kullanılmaz; sonuç `unsupported` olur. Arayüz şunu gösterir: "Şu kısmı kural diline çeviremedim: '…'. Cümleyi değiştirebilir ya da kuralı elle kurabilirsin."
+
 **`RuleCompiler` kuralları (deterministik, birim testli):**
-1. `match` ve `conditions` birlikte `all`/`any` altında yapraklara çevrilir. `frontmostIsNot` → `not(frontmostApp)`, `focusOff` → `focus(isOn: false)`.
-2. **Pil eşiği normalizasyonu:** `batteryBelow` var ve hiçbir koşul `onAC` değilse, kurala `powerSource: battery` eklenir. Gerekçe: pil eşiğine bağlı bir kuralın amacı pil tasarrufudur. Şarjdayken %25'teki bir Mac'te Chrome'u yavaşlatmak kullanıcının istediği şey değildir. Onay ekranı eklenen koşulu açıkça gösterir.
+0. **Desteklenmeyen kısımlar:**
+   - Modelin `unsupported` dizisi boş değilse sonuç `.unsupported(phrases:)` olur.
+   - **Derleyici tarafı koruma:** Cümlede bir süre ifadesi (`\d+\s*(dk|dakika|sa|saat|min|minute|hour)`) varsa ve bu süre ne `freezeAfterMinutes`'e ne `timeBetween`'e karşılık geliyorsa, o ifade `unsupported`'a eklenir.
+   - `freezeAfterMinutes` 5–240 dışındaysa veya `freeze` eylemi olmadan verildiyse `unsupported` olur.
+   - İç içe `ve/veya` (ör. "A ve (B veya C)") şemada ifade edilemez; modelin bunu `unsupported`'a yazması beklenir. T-040 değerlendirme setinde bu tür en az 3 cümle bulunur ve yalnız `.unsupported` sonucu doğru sayılır.
+1. `match` ve `conditions` birlikte `all`/`any` altında yapraklara çevrilir. `frontmostIsNot` → `not(frontmostApp)`, `focusOff` → `focus(isOn: false)`. `freezeAfterMinutes` → `freeze(minHiddenSeconds: dk × 60)`. `whileFrontmost` → `eCore(whileFrontmost:)`.
+2. **Pil eşiği normalizasyonu (kesin AST dönüşümü).** Amaç: pil eşiğine bağlı bir koşul yalnız pildeyken doğru olsun. Şarjdayken %25'teki bir Mac'te Chrome'u yavaşlatmak kullanıcının istediği şey değildir.
+   - **Uygulanmaz:** Cümlede `onBattery` veya `onAC` yaprağı varsa. Kullanıcı güç kaynağını açıkça söylemiştir. Tek istisna aşağıdaki belirsizlik kuralı.
+   - **`match = all`:** `all(L₁…Lₙ)` → `all(L₁…Lₙ, powerSource(battery))`.
+   - **`match = any`:** Yalnız her `batteryBelow` yaprağı `b`, **yerinde** `all(b, powerSource(battery))` ile değiştirilir; diğer dallara dokunulmaz. Örnek: "Pil %30'un altındayken veya Mac ısınınca Docker'ı E-core'a al" → `any(all(batteryBelow 30, battery), thermal ≥ serious)`. Şu iki biçim **yanlıştır**: `any(batteryBelow 30, thermal, battery)` (fişten çekilince her zaman tetiklenir) ve `all(any(batteryBelow 30, thermal), battery)` (termal dalı değiştirir).
+   - **Belirsizlik → soru:** `match = any` ve aynı cümlede hem `batteryBelow` hem `onAC` varsa pil koşulunun kapsamı belirsizdir. Sonuç `.needsClarification` olur: "Pil eşiği yalnız pildeyken mi geçerli olsun?"
+   - `batteryAtOrAbove` normalize edilmez.
+   - Onay ekranı eklenen koşulu açıkça gösterir.
+   - **Zorunlu testler:** `all` ile tek eşik; `any` ile eşik ve termal; `any` ile iki ayrı eşik; `any` ile eşik ve `onAC` (→ soru); `onBattery` açıkça verilmiş (→ değişiklik yok).
 3. **Uygulama adı çözümü:** Ad önce çalışan uygulamalarda, sonra `/Applications`, `~/Applications` ve `/System/Applications` altındaki paket adlarında aranır. Eşleştirme büyük-küçük harf duyarsızdır ve tam eşleşme, sonra kelime öneki olarak yapılır ("Chrome" → "Google Chrome"). Tek aday çıkarsa `AppRef` o olur. Birden çok aday (Chrome ve Chrome Canary) veya hiç aday yoksa taslak "çözülmemiş" işaretlenir ve onay ekranında seçici gösterilir.
 4. `targetApps` boş ve `targetRunaway` yanlışsa taslak geçersizdir; kullanıcıdan hedef istenir.
 5. **NL kuralları hiçbir zaman kendiliğinden etkinleşmez.** Onay ekranında insan diliyle özet gösterilir, örneğin "Pildeyken ve pil %30'un altındayken → Google Chrome → E-core". Kullanıcı [Kaydet] demeden kural `enabled = false` kalır.
+   - Özet, kuralın **her** kısıtını gösterir. Cümleden gelmeyen değerler "(varsayılan)" etiketiyle yazılır, örneğin "5 dk ön plana gelmezse (varsayılan)" veya "öne gelince E-core'u bırak (varsayılan)".
+   - Her `freeze` için özet "Ohm {uygulama}'yı gizler, sonra dondurur" cümlesini içerir (§ 3, madde 8).
 6. **Kullanılabilirlik:** `SystemLanguageModel.default.availability != .available` ise veya model kullanıcının dilini desteklemiyorsa (`supportsLocale`) doğal dil girişi gizlenir. Elle kural arayüzü her zaman çalışır.
 
-**T-040 kapısında "doğru"nun tanımı:** Derlenen `Rule`, beklenen `Rule` ile eşit olmalı. `id`, `name` ve `source` karşılaştırmaya girmez; `AppRef` eşitliği `bundleID` üzerinden kurulur.
+**T-040 kapısında "doğru"nun tanımı:** Derlenen `Rule`, beklenen `Rule` ile eşit olmalı. `id`, `name` ve `source` karşılaştırmaya girmez; `AppRef` eşitliği `bundleID` üzerinden kurulur. Beklenen sonucu `.unsupported` veya `.needsClarification` olan cümleler için doğru sayılan tek sonuç o sonuçtur. Bu cümlelerde üretilen herhangi bir `Rule`, daha gevşek bir kural üretme hatası olarak yanlış sayılır.
 
 ### 5. Örnek kurallar (kalıcı JSON)
 
@@ -283,7 +324,8 @@ Modelin ürettiği `GeneratedRule`:
 ```json
 { "name": "Düşük pilde Chrome E-core", "targetApps": ["Chrome"], "targetRunaway": false,
   "actions": ["eCore"], "match": "all",
-  "conditions": [ { "kind": "batteryBelow", "percent": 30 } ] }
+  "conditions": [ { "kind": "batteryBelow", "percent": 30 } ],
+  "unsupported": [] }
 ```
 Derlenmiş `Rule` (pil eşiği normalizasyonu `powerSource` koşulunu ekledi):
 ```json
@@ -306,7 +348,7 @@ Semantik: Pildeyken yüzde 30'un altına düşünce Chrome E-core'a alınır. Y�
   "targets": { "type": "apps", "apps": [ { "bundleID": "com.tinyspeck.slackmacgap", "displayName": "Slack" } ] },
   "actions": [ { "type": "freeze", "minHiddenSeconds": 600 }, { "type": "eCore" } ] }
 ```
-Semantik: Slack görünür değilse ve 10 dakikadır ön planda değilse dondurulur. Güvenlik vetosu (ör. Slack'te arama sürüyor, mikrofon açık) dondurmayı engellerse, kural E-core'u da istediği için Slack E-core'a alınır. Kullanıcı Slack'e geçince Slack çözülür ve 10 dk yeniden gizli kalana kadar dondurulmaz.
+Semantik: Slack önde değilse ve 10 dakikadır ön plana gelmediyse Ohm Slack'i gizler, sonra dondurur. Slack'in o an görünür bir penceresi varsa (ör. ikinci ekranda) pencere gizlenir. Onay ekranı bunu "Ohm Slack'i gizler, sonra dondurur" diye yazar. Güvenlik vetosu (ör. Slack'te arama sürüyor, mikrofon açık) dondurmayı engellerse, kural E-core'u da istediği için Slack E-core'a alınır. Kullanıcı Slack'e geçince Slack çözülür ve 10 dk yeniden gizli kalana kadar dondurulmaz.
 
 **3. "Mac ısınınca Docker'ı E-core'a al ve bana haber ver"**
 ```json
@@ -329,7 +371,7 @@ Semantik: Termal durum 10 sn boyunca `serious` veya üstünde kalınca Docker E-
     { "bundleID": "com.hnc.Discord", "displayName": "Discord" } ] },
   "actions": [ { "type": "freeze" } ] }
 ```
-Semantik: Xcode 2 sn boyunca önde kalınca, gizli olan ve genel alt sınır kadar (ADR 0004, varsayılan 5 dk) ön plana gelmemiş olan Slack ve Discord dondurulur. Kullanıcı Slack'e geçerse Slack çözülür, kural da `frontmostApp` artık Xcode olmadığı için 2 sn sonra `inactive` olur ve Discord da çözülür.
+Semantik: Xcode 2 sn boyunca önde kalınca, genel alt sınır kadar (ADR 0004, 5 dk) ön plana gelmemiş olan Slack ve Discord önce gizlenir, sonra dondurulur. O an görünür pencereleri olsa bile bu geçerlidir. Kullanıcı Slack'e geçerse Slack çözülür, kural da `frontmostApp` artık Xcode olmadığı için 2 sn sonra `inactive` olur ve Discord da çözülür.
 
 **5. "Hafta içi 22:00 ile 07:00 arası Focus açıkken Dropbox'ı E-core'a al"**
 ```json

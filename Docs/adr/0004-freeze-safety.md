@@ -34,15 +34,16 @@ Kaynak olgular (SDK ve man sayfasından doğrulandı): CoreAudio `kAudioHardware
 
 ### 1. Değişmezler (her biri T-023'te bir teste karşılık gelir)
 
-- **D1 — Önce yaz (write-ahead):** Aynı `(pid, start)` kimliğini içeren journal kaydı yazılıp `fsync` başarıyla dönmeden hiçbir sürece SIGSTOP gönderilmez. Çözmeyi garanti eden `ohm-thawd` süreci o an canlı değilse de gönderilmez.
+- **D1 — Önce yaz (write-ahead):** Aynı `(pid, start)` kimliğini içeren journal kaydı yazılıp `fsync` başarıyla dönmeden hiçbir sürece SIGSTOP gönderilmez ve hiçbir `setpriority(…, PRIO_DARWIN_BG)` çağrılmaz. Koruma modu (§ 6) hazır değilse de ikisi de yapılmaz.
 - **D2 — Etkiler Ohm'un ömrüyle sınırlıdır:** Ohm hangi yoldan sonlanırsa sonlansın, durdurduğu her süreç SIGCONT alır ve koyduğu her `PRIO_DARWIN_BG` politikası kaldırılır. Hiçbir etki Ohm yeniden başladıktan sonra kendiliğinden geri gelmez.
 - **D3 — Kimlik:** Ohm yalnız `(pid, ri_proc_start_abstime)` kaydıyla eşleşen ve aynı önyükleme oturumunda (`kern.bootsessionuuid`) başlamış süreçlere sinyal gönderir. Kimlik, sinyalden hemen önce `proc_pid_rusage` ile yeniden okunur. Mach mutlak zamanı her önyüklemede sıfırlandığı için önyükleme oturumu kontrolü zorunludur.
-- **D4 — Son anda kontrol:** Aşağıdaki "asla dondurma" kuralları, SIGSTOP'tan hemen önce, aynı `Governor` turunda kontrol edilir.
+- **D4 — Son anda kontrol:** Kabul edilebilirlik (§ 4: işlem kuşağı, kapanış durumu, koruma modu, istenen durum ve bütün "asla dondurma" vetoları) son askıya alma noktasından **sonra** yeniden hesaplanır. Bu kontrol ile SIGSTOP arasında hiçbir `await` bulunmaz.
 - **D5 — Aktivasyon her zaman çözer:** Donuk bir uygulama aktive edilirse çözülür. Hiçbir kural ya da ayar bunu engelleyemez.
 - **D6 — Tek yazar:** Journal'a aynı anda en fazla bir süreç yazar. Bu `flock` ile zorlanır.
 - **D7 — Görünürlük:** Donuk bir uygulama varken bu durum menü çubuğunda görünür. "Hepsini çöz" en fazla iki tıklama uzaklıktadır ve uygulama olmadan da çalışır (`ohm thaw --all`).
 - **D8 — Kapanış sırasında dondurma yok:** Oturum kapatma, yeniden başlatma veya kapatma başladığında her şey çözülür ve yeni dondurma yapılmaz.
-- **D9 — Yalnız ön planda olmayan ve gizlenmiş uygulama:** Ön plandaki uygulama (`isActive`) hiçbir yoldan dondurulamaz; buna elle dondurma da dahildir. Her `.regular` uygulama, SIGSTOP'tan önce `hide()` ile gizlenir ve `isHidden` doğrulanır. Gerekçe (T-013): Öndeki bir uygulamanın yeniden aktive edilmesi `didActivateApplicationNotification` üretmiyor. Böyle bir uygulama donarsa D5'in tetikleyicisi hiç gelmez. Gizleme ise uygulamanın çalışıyor olmasını gerektirir, bu yüzden SIGSTOP'tan sonra yapılamaz.
+- **D9 — Yalnız ön planda olmayan ve gizlenmiş uygulama:** Ön plandaki uygulama (`isActive`) hiçbir yoldan dondurulamaz; buna elle dondurma da dahildir. Her `.regular` uygulama, SIGSTOP'tan önce `hide()` ile gizlenir ve `isHidden` doğrulanır. Gerekçe (T-013): Öndeki bir uygulamanın yeniden aktive edilmesi `didActivateApplicationNotification` üretmiyor. Böyle bir uygulama donarsa D5'in tetikleyicisi hiç gelmez. Gizleme ise uygulamanın çalışıyor olmasını gerektirir, bu yüzden SIGSTOP'tan sonra yapılamaz. Gizleme kasıtlıdır ve kullanıcıya kural onayında söylenir (ADR 0003 § 3, madde 8). Dondurma başarısız olursa, uygulama yalnız Ohm tarafından gizlendiyse yeniden gösterilir.
+- **D10 — Ya hep ya hiç (geri alma):** İlk SIGSTOP'tan sonraki herhangi bir hata (journal yazma veya `fsync` hatası, kimlik uyuşmazlığı, yeni helper'da veto, `.unstableTree`, doğrulama zaman aşımı) **bütün grubu hemen geri alır**. Bu, o ana kadar durdurulan her pid'e ters sırayla SIGCONT gönderilmesi ve en iyi çabayla bir `thaw` kaydı yazılması demektir. Yarım dondurulmuş bir grup hiçbir zaman Governor'ın kaydına geçmez. İzleyiciye bırakılmaz, çünkü Ohm yaşadığı sürece izleyici devreye girmez.
 
 ### 2. Kapsam ve "asla dondurma" listesi
 
@@ -69,7 +70,8 @@ Arka plan süreçleri (`.accessory` ve `.prohibited` uygulamalar, paketsiz süre
 | Paket dışı alt süreç var | Ağaçtaki bir pid'in, yürütülebilir dosyası paketin dışında olan canlı bir alt süreci var mı (terminaller, derleme çalıştıran IDE'ler, SSH) | T6 |
 | Hata ayıklanıyor | `proc_pidinfo(PROC_PIDTBSDINFO)` → `pbi_flags & P_TRACED` | Debugger oturumu |
 | Kullanıcının listesi | Ayarlar'daki "asla dondurma" listesi | Kullanıcı tercihi |
-| Genel durum | Kapanış süreci başladı (D8); uyanmadan sonraki 2 dk; `ohm-thawd` canlı değil (D1); journal yazılamıyor | T1, T2 |
+| Genel durum | Kapanış süreci başladı (D8); uyanmadan sonraki 2 dk; koruma modu hazır değil (D1, § 6); journal yazılamıyor | T1, T2 |
+| Kararsız veya güvensiz ağaç | Sabit nokta 3 turda kurulamadı (`.unstableTree`); bundle ID `freezeUnsafe` (`.unsafeTopology`, yalnız kurallar için) | T5 (§ 3) |
 | Kaydedilmemiş belge (isteğe bağlı) | Yalnız kullanıcı Erişilebilirlik iznini zaten vermişse: pencerelerin `AXEdited` özniteliği | T1, T3 |
 
 **Kaydedilmemiş belge sezgisi v1'de zorunlu değil. Gerekçe:**
@@ -84,37 +86,80 @@ Bu nedenle sezgi, izin zaten verilmişse ve T-023'te doğrulanırsa ek bir veto 
 ### 3. Süreç ağacı ve sıra
 
 - **Ağaç** = kök pid (`NSRunningApplication.processIdentifier`) + sorumlu pid'i kök olan **ve** yürütülebilir dosyası uygulama paketinin içinde bulunan süreçler (ADR 0002'deki atıf kuralı). Paket dışı XPC servislerine (ör. `com.apple.WebKit.WebContent`) dokunulmaz, çünkü başka istemcilerle paylaşılıyor olabilirler.
-- **Dondurma sırası: önce kök, sonra helper'lar.** Donma bekçisi (hang watchdog) çok süreçli uygulamalarda ana süreçtedir. Önce ana süreç durursa bekçi de durur ve helper'ları "yanıt vermiyor" diye sonlandıramaz (T5). Kök durduktan sonra yeni helper başlatılamaz. Bu yüzden helper listesi kök durduktan **sonra** çıkarılır ve yarış penceresi kapanır.
-- **Çözme sırası: önce helper'lar, sonra kök.** Kök uyandığında bekçisi uzun bir sessizlik görür. Bu anda helper'lar zaten çalışıyor ve yanıt verebiliyor olur.
+- **Dondurma sırası: önce kök, sonra helper'lar.** Donma bekçisi (hang watchdog) çok süreçli uygulamalarda çoğunlukla ana süreçtedir. Önce ana süreç durursa bekçi de durur ve helper'ları "yanıt vermiyor" diye sonlandıramaz (T5).
+- **Kökü durdurmak ağacı dondurmaz.** Hâlâ çalışan helper'lar kendi alt süreçlerini başlatabilir. Bu yüzden helper'lar **sabit noktaya kadar** durdurulur (§ 4): numaralandır, yenileri durdur, tekrarla; en fazla 3 tur. Üç turda ağaç büyümeyi bırakmazsa bütün grup geri alınır ve `.unstableTree` vetosu döner.
+- **Çözme sırası: önce helper'lar, sonra kök.** Kök uyandığında bekçisi uzun bir sessizlik görür; bu anda helper'lar zaten çalışıyor ve yanıt verebiliyor olur.
+- **İki yönlü bekçiler kapatılamaz, algılanır.** Helper tarafında kökü izleyen bir bekçi varsa, hangi çözme sırası seçilirse seçilsin, bekçi uyandığında son kalp atışının donmadan önce olduğunu görür. Bu yüzden her çözmeden 5 sn sonra bir **sağlık kontrolü** yapılır. Kök ya da gruptaki herhangi bir helper bu sürede sonlanmışsa uygulamanın bundle ID'si `freezeUnsafe` olarak işaretlenir (`~/Library/Application Support/Ohm/freeze-health.json`). Kurallar bu uygulamayı artık dondurmaz (`.unsafeTopology` vetosu). Elle dondurma yalnız uyarıyla mümkündür. Bu işaret muhafazakârdır: Chrome'un boştaki renderer'ı kapatması gibi olağan çıkışlar da işareti koyar; kullanıcı Ayarlar'dan işareti kaldırabilir.
+- **Otomatik (kural kaynaklı) dondurma** yalnız iki koşulla yapılır: ağacı bu işlemde sabit noktaya ulaşmış olmalı ve bundle ID'si `freezeUnsafe` olmamalı.
 
-### 4. Dondurma ve çözme prosedürü (`Governor`, tek actor turu içinde)
+### 4. Dondurma ve çözme prosedürü (`Governor`)
+
+**İşlem kuşağı (generation).** `Governor` bir `generation: UInt64` sayacı tutar. Sayaç şu olaylarda artar: `willPowerOff`, uyku, uyanma, `DesiredState` değişimi, koruma modu değişimi (§ 6), `thawAll`, Ohm'un kapanışa başlaması. Her dondurma işlemi başlarken sayacı kopyalar (`op.token`). Sayaç değişmişse işlem iptal edilmiş sayılır.
+
+**Kabul edilebilirlik (`admissible(op)`)** kontrolü her çağrıda hepsini baştan hesaplar:
+- `op.token == generation`,
+- `protectionReady()` (§ 6, moda göre),
+- `¬powerOffInProgress ∧ ¬postWakeQuiet ∧ ¬shuttingDown`,
+- istenen durum bu dondurmayı hâlâ istiyor (kaynak kural aktif ve bastırılmamış, ya da elle istek geri alınmamış),
+- `¬app.isActive` ve son aktivasyondan beri geçen süre `≥ minHiddenSeconds` (birleşmiş değer, ADR 0003 § 3),
+- § 2'deki **bütün** vetolar yeni bir ağaç görüntüsü üzerinde boş,
+- bu uygulama için başka bir grup veya süren bir işlem yok,
+- kural kaynaklıysa `¬freezeUnsafe(app)`.
 
 ```
-freeze(app):
-  pre: owner.lock bu süreçte tutuluyor; thawdAlive(); ¬powerOffInProgress; ¬postWakeQuiet
-  guard ¬app.isActive else return .vetoed(.frontmost)                 // D9
-  root ← identity(app.processIdentifier)
-  tree ← enumerateTree(root)                          // vetolar için ön görüntü
-  if let v = SafetyPolicy.vetoes(app, tree): return .vetoed(v)
-  app.hide(); await isHidden ∧ ¬onScreenWindows(≤1 sn) else return .vetoed(.notHidden)   // D9: her zaman, SIGSTOP'tan önce
-  guard ¬app.isActive else return .vetoed(.frontmost) // gizleme sırasında öne gelmiş olabilir
-  g ← UUID()
-  journal.append(freeze, g, [root]); fsync            // D1: başarısızsa → .failed, sinyal yok
-  sigtable.add(root.pid)                              // C tarafı, async-signal-safe tablo
-  guard identity(root.pid) == root else abort(g)      // D3
-  kill(root.pid, SIGSTOP)
-  helpers ← enumerateTree(root) − root                // kök durdu, yeni spawn yok
-  journal.append(freeze, g, helpers); fsync
-  for h in helpers: sigtable.add(h.pid); if identity(h.pid) == h { kill(h.pid, SIGSTOP) }
-  verify: 100 ms içinde bütün pid'ler pbi_status == SSTOP; değilse thaw(g, .verifyFailed)
+freeze(op) async -> FreezeOutcome:
+  // FAZ A — askıya alınabilir hazırlık. TEK askıya alma noktası: gizleme beklemesi.
+  guard admissible(op) else return .vetoed(reasons)
+  op.hiddenByOhm ← ¬app.isHidden
+  if op.hiddenByOhm { app.hide() }
+  await waitUntil(app.isHidden ∧ ¬onScreenWindows(app), timeout: 1 sn)
+      // Bu bekleme sırasında actor yeniden girişlidir (reentrant): willPowerOff, kural silinmesi,
+      // aktivasyon, izleyicinin ölümü veya thawAll işlenmiş olabilir. Bu yüzden Faz B her şeyi yeniden doğrular.
 
-thaw(g, reason):
-  for h in helpers(g).reversed(): if identity(h.pid) == h { kill(h.pid, SIGCONT) }
-  if identity(root.pid) == root { kill(root.pid, SIGCONT) }
+  // FAZ B — askıya almasız bölge: buradan dönüşe kadar hiçbir `await` yok.
+  // Governor kendi DispatchSerialQueue yürütücüsünde çalışır (ADR 0001 § 3); bloklayan beklemeler bu kuyruktadır.
+  guard admissible(op) ∧ app.isHidden ∧ ¬onScreenWindows(app) else { restoreHide(op); return .vetoed(reasons) }
+  g ← UUID(); stopped ← []
+  do {
+    journal.append(freeze, g, [root], hiddenByOhm: op.hiddenByOhm); fsync     // D1
+    stopOne(root, &stopped)            // kimliği doğrula (D3) → sigtable.add → SIGSTOP → stopped.append
+    fixed ← false
+    for pass in 1...3 {                // sabit nokta (§ 3)
+      new ← enumerateTree(root) − stopped
+      if new.isEmpty { fixed ← true; break }
+      if let v = SafetyPolicy.vetoes(app, new) { throw Veto(v) }             // yeni helper ses çalıyor, tap kurmuş vb.
+      journal.append(freeze, g, new); fsync
+      for h in new { stopOne(h, &stopped) }
+    }
+    guard fixed else throw Veto(.unstableTree)
+    verifyStoppedBlocking(stopped, limit: 100 ms, poll: 5 ms)   // pbi_status == SSTOP; askıya alma değil, kuyrukta bloklayan bekleme
+  } catch {
+    rollback(g, stopped, reason: error)                        // D10
+    restoreHide(op)
+    return .failed(error) / .vetoed(v)
+  }
+  register(g, stopped, op); scheduleMaxDuration(g)
+  return .frozen(g)
+
+rollback(g, stopped, reason):          // D10 — en iyi çaba; hiçbir adım bir öncekinin başarısına bağlı değil
+  for p in stopped.reversed(): if identity(p) == p { kill(p.pid, SIGCONT) }   // son durdurulan ilk çözülür
+  sigtable.remove(stopped)
+  try? journal.append(thaw, g, reason: .rollback)   // yazılamazsa: kurtarma kimliği doğrulanmış SIGCONT'u tekrarlar (zararsız)
+  if reason is JournalError { disableEffects(.journalUnwritable) }
+
+restoreHide(op):
+  if op.hiddenByOhm ∧ app hâlâ çalışıyor ∧ ¬app.isActive { app.unhide() }     // yalnız Ohm gizlediyse; kullanıcının gizlediğine dokunulmaz
+
+thaw(g, reason):                        // senkron, askıya almasız
+  for h in helpers(g).reversed(): if identity(h) == h { kill(h.pid, SIGCONT) }
+  if identity(root) == root { kill(root.pid, SIGCONT) }
   sigtable.remove(g)
-  journal.append(thaw, g, reason)                     // fsync gerekmez: kayıp olursa kurtarma SIGCONT'u tekrarlar, kimlik doğrulandığı için zararsız
+  journal.append(thaw, g, reason)       // fsync gerekmez: kayıp olursa kurtarma SIGCONT'u tekrarlar, kimlik doğrulandığı için zararsız
+  scheduleHealthCheck(g, after: 5 sn)   // § 3
 ```
 
+- **Askıya almasız adımlar (açıkça):** Faz B'nin tamamı; `rollback`, `restoreHide` ve `thaw`. Bunların hiçbiri `await` içermez. Tek bloklayan bekleme `verifyStoppedBlocking`'tir (en fazla 100 ms, Governor kuyruğunda) ve `fsync` çağrılarıdır. Bu sürede kuyruğa giren bir aktivasyon çözmesi en fazla bu kadar gecikir. 300 ms bütçesi korunur; T-023 bunu ölçer.
+- **Başarılı dondurmadan sonra gizleme geri alınmaz.** Kural bitince veya süre dolunca yapılan çözmede uygulama gizli kalır; gösterilmesi pencereleri beklenmedik anda ekrana getirirdi. Kullanıcı uygulamaya geçince macOS onu zaten gösterir. `hiddenByOhm` bilgisi yalnız başarısız bir dondurmada geri yükleme için kullanılır ve journal kaydında tanı amacıyla tutulur.
 - Donuk bir kök süreç dışarıdan sonlanırsa (Zorla Çık, çökme; `didTerminateApplicationNotification` veya kökte kqueue `NOTE_EXIT`), **helper'ları hemen çözülür.** Aksi halde yetim kalan durdurulmuş helper'lar sonsuza dek `T` durumunda kalır.
 - Aynı şekilde, sonlanan bir helper grubundan düşülür.
 
@@ -147,7 +192,10 @@ thaw(g, reason):
 - Dosya `open(O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600)` ile açılır.
 - Her kayıt tek bir `write()` çağrısıyla yazılır; kayıtlar 4 KB'ın altındadır. `freeze` ve `ecore` kayıtlarından sonra `fsync()` çağrılır.
 - **`F_FULLFSYNC` kullanılmaz.** Tehdit modeli süreç ölümüdür, güç kaybı değil. Sürecin ölümünde çekirdeğin sayfa önbelleği korunur. Güç kaybında veya kernel panic'te bütün süreçler zaten ölür ve SIGSTOP durumu önyüklemeden sonra var olmaz; eski journal önyükleme oturumu kontrolüyle (D3) atılır. `fsync` yine de çağrılır, çünkü `EIO` ve `ENOSPC` gibi hataları SIGSTOP'tan **önce** yüzeye çıkarır.
-- `write` veya `fsync` başarısız olursa dondurma iptal edilir, sinyal gönderilmez ve dondurma özelliği "journal yazılamıyor" gerekçesiyle devre dışı kalır.
+- `write` veya `fsync` başarısız olursa:
+  - Grubun ilk kaydında hata olursa hiçbir sinyal gönderilmez.
+  - Sonraki bir kayıtta hata olursa (kök zaten durdurulmuşsa) D10 gereği bütün grup hemen geri alınır.
+  - Her iki durumda da dondurma ve E-core "journal yazılamıyor" gerekçesiyle devre dışı kalır. Mevcut etkiler çözülür ve geri alınır.
 
 **Okuma ve kurtarma (`JournalRecovery`, Ohm, `ohm-thawd` ve CLI aynı kodu kullanır):**
 1. Çağıran `owner.lock` kilidini tutmalıdır.
@@ -168,7 +216,20 @@ thaw(g, reason):
 
 **İzleyicinin biçimi:** İzleyici `SMAppService.agent(plistName: "dev.ohm.thawd.plist")` ile launchd'ye kaydedilen bir LaunchAgent'tır. Plist `Ohm.app/Contents/Library/LaunchAgents/` altındadır ve şu ayarları taşır: `BundleProgram = Contents/MacOS/ohm-thawd`, `KeepAlive = true`, `RunAtLoad = true`. `ProcessType` varsayılan (Standard) bırakılır; `Background` seçilmez, çünkü çözme gecikmesini artırabilir.
 
-**Bu biçim henüz doğrulanmadı.** T-013 ayrı bir süreç kullandı, `SMAppService` kaydını değil. Kaydın geliştirme imzasıyla (Apple Development) ve Developer ID ile macOS 26/27'de çalıştığı, `KeepAlive` ile izleyicinin yeniden başladığı T-023'ün kabul testidir (§ 10, test 13). Test geçmezse Alternatif B'ye düşülür: izleyiciyi Ohm kendisi `posix_spawn` ile başlatır, izleyici aynı kilit protokolünü kullanır ve sonraki açılışta kurtarma aynen kalır. Bu durumda "ikisi birden öldü" senaryosu yalnız sonraki açılış ve CLI ile karşılanır ve README'de açıkça yazılır.
+**Bu biçim henüz doğrulanmadı.** T-013 ayrı bir süreç kullandı, `SMAppService` kaydını değil. Kaydın geliştirme imzasıyla (Apple Development) ve Developer ID ile macOS 26/27'de çalıştığı ve `KeepAlive` ile izleyicinin yeniden başladığı, T-023'ün 13 numaralı kabul testidir.
+
+**Koruma modları (#4, #5).** Governor her an tam olarak bir modda çalışır. Kalıcı etkilerin (dondurma **ve** E-core) ikisi de mod `none` değilken uygulanabilir:
+
+| Mod | Ne zaman | İzleyici | Hazırlık (`protectionReady()`) |
+|---|---|---|---|
+| `launchAgent` | `SMAppService.agent(…).status == .enabled` | launchd, `KeepAlive` | `status == .enabled` **ve** `thawd.lock` başka bir süreçte tutuluyor (LOCK_SH yoklaması başarısız) |
+| `spawnedWatcher` | LaunchAgent kapalı, onay bekliyor, reddedildi veya test 13 kaldı | Ohm, `ohm-thawd --spawned` sürecini `posix_spawn` ile ve `POSIX_SPAWN_SETSID` bayrağıyla başlatır. Böylece izleyici Ohm'un süreç grubunda olmaz ve grup sinyallerinden etkilenmez. | Çocuk süreç canlı **ve** `thawd.lock` tutuluyor. Çocuk ölürse Ohm onu hemen yeniden başlatır; başlatamazsa mod `none` olur. |
+| `none` | İkisi de hazır değil | – | Hazır değil: yeni dondurma ve yeni E-core yok. Mevcut etkiler hemen çözülür ve geri alınır. Ölçüm çalışmaya devam eder. |
+
+- **Mod seçimi:** Açılışta ve `SMAppService` durumu değiştiğinde yapılır. Sıra `launchAgent`, sonra `spawnedWatcher`. Her mod değişimi işlem kuşağını artırır (§ 4).
+- **`spawnedWatcher` modunun sınırı:** Ohm ve izleyici birlikte ölürse onları kimse yeniden başlatmaz. Bu senaryoyu sonraki açılışta kurtarma ve `ohm thaw --all` karşılar; README bunu açıkça yazar. `spawnedWatcher` izleyicisi Ohm öldüğünde kurtarmayı yapar ve journal boşaldığında kendiliğinden çıkar. `launchAgent` izleyicisi ise sürekli yaşar.
+- **E-core neden korumaya bağlandı:** D2 gereği etkiler Ohm'dan uzun yaşamamalı. E-core görünmez bir yavaşlıktır. Ohm çökerse ve kullanıcı Ohm'u yeniden açmazsa, uygulama kapanana kadar (günlerce) sürebilir. "Oturum kapsamlı, sonraki açılışta geri alınır" seçeneği reddedildi, çünkü tam da bu senaryoyu kapatmıyor. `spawnedWatcher` kullanıcı onayı gerektirmediği için bu kısıt pratikte E-core'u kapatmaz. Mod ancak iki yol da başarısız olursa `none` olur.
+- **Kayıt ömrü:** İzleyici (`launchAgent` kaydı veya `spawnedWatcher` süreci), journal'da açık bir dondurma veya E-core grubu varken hiçbir koşulda kaldırılmaz veya durdurulmaz. `unregister()` yalnız journal boşken ve hem dondurma hem E-core özelliği kapalıyken çağrılır.
 
 **Gerekçe:**
 - Faz 2 kapısı "Ohm'u zorla öldürme testinde (`kill -9`) dondurulmuş uygulama kalmaz" diyor. Yalnız sonraki açılışta kurtarma bu kapıyı **geçemez**: kullanıcı Ohm'u yeniden açmazsa uygulamalar donuk kalır ve T1 gerçekleşir.
@@ -192,8 +253,8 @@ Ohm açılışı:
   JournalRecovery.run()                      // üçüncü katman: kalıntı varsa temizle
   journal.append(open)
 
-Ohm, her freeze öncesi:
-  flock(thawd.lock, LOCK_SH | LOCK_NB) başarılı olursa → izleyici YOK → kilidi bırak, dondurmayı reddet (D1)
+Ohm, her freeze ve E-core öncesi (protectionReady'nin parçası):
+  flock(thawd.lock, LOCK_SH | LOCK_NB) başarılı olursa → izleyici YOK → kilidi bırak, işlemi reddet (D1)
 ```
 
 - **`O_CLOEXEC` zorunludur.** Kilit dosyaları `O_CLOEXEC` ile açılır. Ohm'un başlattığı herhangi bir alt süreç (Sparkle yükleyicisi, `open`) kilit tanımlayıcısını miras alırsa, Ohm öldükten sonra kilit bırakılmaz ve izleyici hiç uyanmaz. Ohm `fork()`'u exec'siz kullanmaz.
@@ -201,9 +262,10 @@ Ohm, her freeze öncesi:
 - **Neden `NOTE_EXIT` değil `flock`:** Spike'taki izleyici Ohm'un pid'ini `NOTE_EXIT` ile izledi. Üretimde `flock` seçildi, çünkü izleyicinin Ohm'un pid'ini öğrenmesi ve Ohm'dan önce başlaması arasında yarış yok. Pid yeniden kullanımı da sorun değil: kilidi çekirdek, süreç öldüğünde bırakır. Tek Ohm örneği garantisi de aynı kilitten gelir.
 
 **Kayıt ve kullanıcı deneyimi:**
-- İzleyici kurulumda değil, dondurma ilk kez etkinleştirildiğinde kaydedilir. Öncesinde bir açıklama ekranı gösterilir: "Dondurma, Ohm beklenmedik şekilde kapansa bile uygulamalarının donuk kalmaması için küçük bir yardımcı süreç kullanır. Giriş Öğeleri'nde 'Ohm' olarak görünür."
-- `SMAppService.status != .enabled` ise (kullanıcı Giriş Öğeleri'nde kapattı veya onay bekleniyor) **dondurma kapalıdır.** Ayarlar'da `SMAppService.openSystemSettingsLoginItems()` düğmesi gösterilir. E-core ve ölçüm bundan etkilenmez.
-- Dondurma özelliği kapatılır ve journal boşsa `unregister()` çağrılır. Homebrew cask'ın `uninstall` bölümü `launchctl bootout gui/$UID/dev.ohm.thawd` içerir.
+- LaunchAgent kurulumda değil, dondurma veya E-core ilk kez kullanıldığında kaydedilir. Öncesinde bir açıklama ekranı gösterilir: "Ohm, beklenmedik şekilde kapansa bile uygulamalarının donuk ya da yavaşlatılmış kalmaması için küçük bir yardımcı süreç kullanır. Giriş Öğeleri'nde 'Ohm' olarak görünür."
+- Kayıt reddedilir veya onay beklenirse Ohm `spawnedWatcher` moduna geçer; özellikler kapanmaz. Ayarlar'da "Koruma: sınırlı (Ohm ve yardımcı birlikte kapanırsa yalnız sonraki açılışta çözülür) — [Giriş Öğelerini aç]" satırı gösterilir. Bu satırın düğmesi `SMAppService.openSystemSettingsLoginItems()` çağırır.
+- Mod `none` ise Ayarlar'da kırmızı "Koruma kapalı: dondurma ve E-core devre dışı" gösterilir. Ölçüm etkilenmez.
+- Homebrew cask'ın `uninstall` bölümü `launchctl bootout gui/$UID/dev.ohm.thawd` içerir.
 - İzleyicinin bütçesi: ≤4 MB bellek, boşta 0 CPU (`flock` veya vnode beklemesinde bloklu). ADR 0001'deki bütçe tablosunda ayrı bir satırdır.
 
 ### 7. Katmanlı çözme: bütün tetikleyiciler
@@ -238,7 +300,7 @@ Ohm, her freeze öncesi:
 
 ### 8. E-core politikasının geri alınması
 
-- `PRIO_DARWIN_BG` sürecin kendi özelliğidir ve Ohm'dan bağımsız yaşar. Ohm ölürse politika uygulama kapanana kadar kalır. Bu veri kaybı değil ama D2'ye aykırı ve görünmez bir yavaşlık yaratır. Bu yüzden E-core da journal'a yazılır (`ecore` ve `ecoreOff`) ve çözmeyle aynı katmanlarla geri alınır: düzenli kapanış, sinyal işleyicisi (yalnız dondurma tablosu; E-core işleyicide geri alınmaz), izleyici ve sonraki açılış.
+- `PRIO_DARWIN_BG` sürecin kendi özelliğidir ve Ohm'dan bağımsız yaşar. Ohm ölürse politika uygulama kapanana kadar kalır. Bu veri kaybı değil ama D2'ye aykırı ve görünmez bir yavaşlık yaratır. Bu yüzden E-core da journal'a yazılır (`ecore` ve `ecoreOff`) ve çözmeyle aynı katmanlarla geri alınır: düzenli kapanış, sinyal işleyicisi (yalnız dondurma tablosu; E-core işleyicide geri alınmaz), izleyici ve sonraki açılış. E-core da dondurma gibi koruma modu `none` değilken uygulanabilir (§ 6).
 - E-core uygulamanın bütün ağacına uygulanır. İşi yapan çoğunlukla helper süreçlerdir (Chrome renderer'ları). Sonradan başlayan helper'lar `ambient` tick'lerinde (10 sn) yakalanır ve politikaya eklenir.
 - **Geri alma:** `setpriority(PRIO_DARWIN_PROCESS, pid, 0)`, yalnız Ohm'un journal'ına yazılmış ve kimliği doğrulanan pid'lere uygulanır. T-012 bunun hedef dışındaki bir süreçten çalıştığını gösterdi (P payı 0,00'dan 1,00'a döndü).
 - **Durum doğrulaması:** `getpriority` BG durumunu yansıtmadığı için (T-012), politikanın gerçekten uygulandığı `ri_penergy_nj / ri_energy_nj` oranıyla doğrulanır. Yük altında bu oran birkaç tick içinde ~0'a inmelidir. Boştaki bir süreçte oran anlamsızdır; bu durumda doğrulama atlanır ve arayüz yalnız "uygulandı" der.
@@ -249,7 +311,8 @@ Ohm, her freeze öncesi:
 - **Menü çubuğu:** En az bir uygulama donuksa halkanın köşesinde ❄ ve sayı görünür.
 - **Popover'da "Donuk" bölümü:** Uygulama, ne zamandan beri donuk olduğu, kaynağı (kural adı veya "elle") ve [Çöz] düğmesi. Sayı 0'dan büyükse "Hepsini çöz" her zaman görünür.
 - **Ayarlar:**
-  - "Dondurma koruması: Etkin (yardımcı süreç çalışıyor)" ya da kırmızı "Kapalı: [Giriş Öğelerini aç]".
+  - Koruma modu (§ 6): "Koruma: tam (launchd yardımcısı)", "Koruma: sınırlı (Ohm'un başlattığı yardımcı) — [Giriş Öğelerini aç]" ya da kırmızı "Koruma kapalı: dondurma ve E-core devre dışı".
+  - Kurallarca dondurulmayan (`freezeUnsafe`) uygulamaların listesi ve işareti kaldırma düğmesi (§ 3).
   - "Asla dondurma" listesi ve her girdinin gerekçesi.
   - Genel süre sınırları.
 - **Kural durumu:** Vetolar bildirimle değil, kural satırında gerekçesiyle gösterilir ("veto: ses çalıyor").
@@ -272,10 +335,17 @@ Ohm, her freeze öncesi:
 10. Donuk kök süreç dışarıdan öldürülür. Helper'ları `T` durumunda kalmaz.
 11. Journal dizini salt okunur yapılır. Dondurma reddedilir ve hiçbir süreç SIGSTOP almaz.
 12. `thawd.lock` tutulmuyorken (izleyici yok) dondurma reddedilir.
-13. **`SMAppService` izleyicisi:** Uygulama Developer ID ile imzalıyken (Faz 4 öncesi geliştirme imzasıyla da) `register()` sonrasında `status == .enabled` olur. `ohm-thawd` `kill -9` ile öldürülünce launchd onu yeniden başlatır ve yeniden başlayan izleyici test 1'i geçer. Başarısızsa § 6'daki Alternatif B uygulanır.
+13. **`SMAppService` izleyicisi:** Uygulama Developer ID ile imzalıyken (Faz 4 öncesi geliştirme imzasıyla da) `register()` sonrasında `status == .enabled` olur. `ohm-thawd` `kill -9` ile öldürülünce launchd onu yeniden başlatır ve yeniden başlayan izleyici test 1'i geçer. Başarısızsa `launchAgent` modu devre dışı bırakılır ve ürün `spawnedWatcher` moduyla çıkar (§ 6, test 22).
 14. **Elle (otomasyonla yapılamaz):** Donuk uygulama Dock simgesine tıklanarak ve Cmd-Tab ile seçilerek aktive edilir. Her iki yolda da uygulama 300 ms içinde yanıt verir.
 15. Ön plandaki bir uygulamayı elle veya kuralla dondurma girişimi `.frontmost` ile reddedilir ve SIGSTOP gönderilmez (D9).
-16. E-core uygulanmış bir test sürecinde Ohm `kill -9` ile öldürülür. İzleyici politikayı kaldırır; kanıt olarak yük altındaki sürecin `P_share` değeri 1,00'a döner.
+16. E-core uygulanmış bir test sürecinde Ohm `kill -9` ile öldürülür. İzleyici politikayı kaldırır; kanıt olarak yük altındaki sürecin `P_share` değeri 1,00'a döner. Test, dondurmanın **hiç açılmadığı** temiz bir oturumda yapılır (yalnız E-core kullanan kullanıcı; #5).
+17. **Geri alma (D10), hata enjeksiyonu:** Kök durdurulduktan sonra ikinci journal kaydı yazılamaz (test kancası). 100 ms içinde kök ve durdurulmuş helper'lar `T` durumunda değildir, grup Governor kaydında yoktur, dondurma ve E-core devre dışıdır. Aynı test kimlik uyuşmazlığı ve doğrulama zaman aşımı için de tekrarlanır.
+18. **Yarış (#2):** Gizleme beklemesi sırasında sırayla şunlar tetiklenir: `willPowerOff`, kuralın silinmesi, izleyicinin öldürülmesi, test uygulamasının ses çalmaya başlaması, uygulamanın aktive edilmesi. Hiçbirinde SIGSTOP gönderilmez ve Ohm'un gizlediği uygulama yeniden gösterilir.
+19. **Helper üreten ağaç (#3):** Helper'ı her 1 ms'de yeni bir alt süreç başlatan bir test uygulaması `.unstableTree` vetosu alır. Hiçbir süreç `T` durumunda kalmaz.
+20. **Helper bekçisi (#3):** Helper'ı, kökün kalp atışı 2 sn'den eskiyse çıkan bir test uygulaması 10 sn dondurulup çözülür. Sağlık kontrolü uygulamayı `freezeUnsafe` işaretler ve sonraki kural dondurması `.unsafeTopology` ile reddedilir.
+21. **Gizlemenin geri yüklenmesi (#14):** Görünür bir test uygulamasının dondurması veto ile başarısız olur; uygulama yeniden gösterilir. Zaten gizli olan bir uygulamanın başarısız dondurması onu gizli bırakır.
+22. **`spawnedWatcher` uçtan uca (#4):** LaunchAgent kaydı kapalıyken mod `spawnedWatcher` olur. Dondurma ve E-core çalışır; Ohm `kill -9` ile öldürülünce 1 sn içinde çözülür ve politika kaldırılır. İzleyici çocuğu öldürülünce Ohm onu yeniden başlatır; başlatamazsa mod `none` olur ve mevcut etkiler geri alınır.
+23. **Aktivasyon gecikmesi Faz B altında:** Doğrulama beklemesi ve `fsync` sürerken gelen aktivasyon çözmesi yine 300 ms içinde tamamlanır.
 
 Kural (T-013 kartıyla aynı): Testler yalnız testin kendi başlattığı süreçlere sinyal gönderir.
 
@@ -283,7 +353,7 @@ Kural (T-013 kartıyla aynı): Testler yalnız testin kendi başlattığı süre
 
 - **A. Yalnız bir sonraki açılışta kurtarma.** Tek başına reddedildi. `kill -9` kapısını geçemez; kullanıcı Ohm'u yeniden açmazsa uygulamalar süresiz donuk kalır ve bu T1'in kendisidir. İzleyiciyle birlikte ikinci katman olarak kullanılır (§ 6).
 - **A2. Yalnız izleyici (sonraki açılışta kurtarma olmadan).** Reddedildi. T-013, izleyici de ölürse sürecin `T` durumunda kaldığını gösterdi. O senaryoyu yalnız açılışta kurtarma kapatır.
-- **B. Ohm'un `posix_spawn` ile başlattığı bir alt izleyici (kqueue `NOTE_EXIT` ile ebeveyni izler).** Birincil yol olarak reddedildi. Onu yeniden başlatan kimse yok. `pkill -9 -f Ohm` gibi desenlerle ya da süreç grubu sinyalleriyle Ohm'la birlikte ölebilir. Artısı Giriş Öğeleri'nde görünmemesi. **T-023'ün 13 numaralı testi `SMAppService.agent` yolunu doğrulayamazsa yedek budur** (§ 6).
+- **B. Ohm'un `posix_spawn` ile başlattığı bir alt izleyici (kqueue `NOTE_EXIT` ile ebeveyni izler).** Tek başına birincil yol olarak reddedildi, `spawnedWatcher` modu olarak kabul edildi (§ 6). Zayıflığı: onu Ohm dışında yeniden başlatan kimse yok ve `pkill -9 -f Ohm` gibi desenlerle Ohm'la birlikte ölebilir. `POSIX_SPAWN_SETSID` bayrağı süreç grubu sinyallerini engeller, ama bu deseni engellemez. Artısı Giriş Öğeleri'nde görünmemesi ve kullanıcı onayı gerektirmemesi.
 - **C. Root yetkili helper veya daemon.** Reddedildi. Aynı kullanıcının süreçlerine sinyal göndermek root gerektirmiyor. Daemon onayı daha ağır ve saldırı yüzeyi gereksiz büyür.
 - **D. SIGSTOP yerine `task_suspend`.** Reddedildi. `task_for_pid` entitlement veya root ister. Ayrıca SIGSTOP durumu `ps` ile görünür ve dışarıdan `kill -CONT` ile düzeltilebilir. Bu, acil çıkış yolunun temelidir.
 - **E. Uykudan önce hepsini çözmek.** Reddedildi (§ 7'deki gerekçe).
@@ -293,9 +363,10 @@ Kural (T-013 kartıyla aynı): Testler yalnız testin kendi başlattığı süre
 
 ## Sonuçlar ve riskler
 
-- **(+)** Ohm'un hangi yolla sonlandığından bağımsız olarak (düzenli kapanış, sinyal, çökme, `SIGKILL`, jetsam) çözme garanti eden bağımsız bir süreç vardır. İzleyici de yoksa dondurma hiç yapılmaz.
+- **(+)** Ohm'un hangi yolla sonlandığından bağımsız olarak (düzenli kapanış, sinyal, çökme, `SIGKILL`, jetsam) çözme ve geri alma garanti eden bağımsız bir süreç vardır. Koruma modu `none` ise ne dondurma ne E-core yapılır.
 - **(+)** Acil çıkış yolu (`ohm thaw --all`, `kill -CONT`) hiçbir Ohm sürecine bağımlı değildir.
-- **(−)** Giriş Öğeleri'nde görünen ikinci bir süreç ve dondurmayı açmak için tek seferlik bir açıklama ekranı gerekir.
+- **(−)** `launchAgent` modunda Giriş Öğeleri'nde görünen ikinci bir süreç ve tek seferlik bir açıklama ekranı gerekir. `spawnedWatcher` modu bunu gerektirmez ama daha zayıf koruma verir (§ 6).
+- **(−)** Dondurma prosedürü karmaşıklaştı: işlem kuşağı, iki faz, sabit nokta, geri alma ve sağlık kontrolü. Bu karmaşıklık T-023'teki 23 kabul testiyle karşılanır; T-024 kritik review'u bu bölüme odaklanmalıdır.
 - **Kalan risk R2 (T8):** Donuk uygulamanın takvim alarmları ve mesajları gecikir. Süre sınırı (2 sa) bunu sınırlar. Kullanıcı takvim uygulamasını "asla dondurma" listesine ekleyebilir. Varsayılan listeye Calendar zaten `com.apple.` kuralıyla giriyor.
 - **Kalan risk R3 (T6):** Güç iddiası tutmadan indirme veya yükleme yapan uygulamalarda aktarım yarıda kalabilir. Bu genellikle kurtarılabilir bir hatadır ama arayüz, dondurma açıklamasında bunu söyler.
 - **Kalan risk R4:** Çok süreçli uygulamalar, çözüldükten sonra saat sıçramasını görüp kendi bekçileriyle helper'ları yeniden başlatabilir (Electron'da sayfanın yeniden yüklenmesi gibi). Çözme sırası (§ 3) bu riski azaltır, sıfırlamaz. Faz 0 yalnız tek süreçli TextEdit'i ölçtü. T-023, testin kendi açtığı helper'lı bir uygulamayla (ör. geçici profilli yeni bir Chrome örneği) sırayı ve çözme sonrası sekme sağlığını ölçer.
@@ -321,5 +392,5 @@ Kural (T-013 kartıyla aynı): Testler yalnız testin kendi başlattığı süre
 - **T-013 PASS (aktivasyon):** Donuk uygulama için de `didActivateApplicationNotification` geliyor; SIGCONT gecikmesi 17–18 ms. **Karar:** Kurallar `freeze` kullanabilir (ADR 0003). Öndeki uygulamanın yeniden aktivasyonu bildirim üretmediği için D9 eklendi: yalnız ön planda olmayan ve SIGSTOP'tan önce gizlenmiş uygulamalar dondurulur.
 - **T-013 PASS (kurtarma):** Ayrı izleyici `kill -9` sonrasında 36–39 ms içinde çözdü. İkisi birlikte ölünce sonraki açılışta journal'dan kurtarma çözdü. **Karar:** İzleyici ve sonraki açılışta kurtarma birlikte kullanılır (§ 6).
 - **T-012 PASS:** `setpriority(…, 0)` politikayı başka bir süreçten kaldırıyor, bu yüzden D2 E-core için de tam geçerli. `getpriority` durumu yansıtmıyor. **Karar:** `ECoreLane` kendi kaydını tutar; E-core durumu `setpriority`'den önce journal'a yazılır ve izleyici ile sonraki açılış bunu geri alır (§ 5, § 8, test 16).
-- **Açık kalan tek yedekli karar (T-023 test 13):** İzleyicinin `SMAppService` LaunchAgent'ı biçimi doğrulanmadı. Başarısız olursa Alternatif B (Ohm'un `posix_spawn` ile başlattığı izleyici) ve sonraki açılışta kurtarma kullanılır.
+- **Açık kalan tek yedekli karar (T-023 test 13):** `launchAgent` modu doğrulanmadı. Başarısız olursa ürün `spawnedWatcher` moduyla ve sonraki açılışta kurtarmayla çıkar (§ 6, test 22).
 - **Açık kalan doğrulamalar (T-023):** Dock ve Cmd-Tab ile çözme (test 14, elle). Helper'lı uygulamada sıra ve sekme sağlığı (R4). Süreç ağacının sorumlu pid ve paket yolu kuralıyla doğru kurulması (Chrome, Slack, Safari); kurulmazsa `ppid` zinciri ile paket yolu birlikte kullanılır. Test 14 başarısız olursa `freeze` kurallardan kaldırılır ve dondurma yalnız elle yapılan, en fazla 30 dk süren bir işleme iner.

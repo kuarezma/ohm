@@ -40,7 +40,7 @@ Ohm; menü çubuğu uygulaması, widget, `ohm` CLI ve dondurma güvenliği için
 | `OhmApp` | Xcode app, sandbox'sız, Developer ID | Hepsi | Kompozisyon kökü |
 | `OhmWidget` | WidgetKit uzantısı, sandbox'lı | `OhmModel`, `OhmLedger` (yalnız `LedgerReader`) | Özel API ve sinyal kodu widget'a girmez |
 | `ohm-cli` | Komut satırı, `Ohm.app/Contents/MacOS/ohm` | `OhmModel`, `OhmLedger` (okuyucu), `OhmControl`, `OhmJournal` (acil `thaw --all`) | Canlı değişiklikler uygulama üzerinden geçer |
-| `ohm-thawd` | LaunchAgent, `Ohm.app/Contents/MacOS/ohm-thawd` | `OhmJournal`, `COhmSys` | ADR 0004'teki izleyici; mümkün olan en küçük süreç |
+| `ohm-thawd` | `Ohm.app/Contents/MacOS/ohm-thawd`; LaunchAgent (`launchAgent` modu) veya Ohm'un `posix_spawn` ile başlattığı süreç (`spawnedWatcher` modu) | `OhmJournal`, `COhmSys` | ADR 0004'teki izleyici; mümkün olan en küçük süreç |
 
 Kurallar:
 - Target'lar arasında döngü yok. `OhmRules`, `OhmGovernor`'ı import etmez: kural motoru "istenen durumu" (`DesiredState`) üretir, `Governor` uygular. `OhmGovernor` de `OhmSampling`'i import etmez; `RunawayDetector` örnekleri `OhmModel` tipleriyle alır.
@@ -73,6 +73,9 @@ public struct SystemPower: Sendable {                                // bir aral
     public var systemLoad: Double?                 // PowerTelemetryData.SystemLoad (~20 sn tazelik); yoksa deşarjda V × I
     public var systemLoadAge: Duration?            // son SystemLoad güncellemesinden beri geçen süre
     public var clusterActive: ClusterResidency?    // IOReport "CPU Stats" P/E doluluğu (canlı)
+}
+public enum SystemEnergySource: Int, Sendable, Codable {  // ADR 0002 § 5: tek etkin sistem enerjisi kaynağı
+    case systemLoad = 0, batteryVI = 1, none = 2
 }
 public struct EnergyBurst: Sendable {             // IOReport "Energy Model" patlaması: seyrek, uzun pencere
     public var window: DateInterval               // önceki patlamadan bu patlamaya
@@ -109,21 +112,27 @@ public enum SamplingCadence: Sendable, Equatable {
 }
 
 // MARK: Örnekleme
-public protocol SystemLoadSampling: Sendable {                       // SystemLoadSampler; yedek: deşarjda V × I
-    func read() async -> (watts: Double?, age: Duration?)
+// İzolasyon modeli (§ 3): örnekleyici sözleşmeleri Sendable DEĞİLDİR ve eşzamanlıdır (sync).
+// Uygulamaları durum tutan final class'lardır ve yalnız SamplingEngine actor'ünün içinde yaşar.
+// Actor'e init sırasında `sending` ile devredilir; testler sahte uygulamaları aynı yoldan verir.
+public protocol SystemLoadSampling: AnyObject {                      // SystemLoadSampler; yedek: deşarjda V × I
+    func read() -> (watts: Double?, source: SystemEnergySource, age: Duration?)
 }
-public protocol ComponentSampling: Sendable {                        // IOReportSampler; yoksa NullComponentSampler
-    func sample() async -> (gpuWatts: Double?, residency: ClusterResidency?, burst: EnergyBurst?)
+public protocol ComponentSampling: AnyObject {                       // IOReportSampler; yoksa NullComponentSampler
+    func sample() -> (gpuWatts: Double?, residency: ClusterResidency?, burst: EnergyBurst?)
 }
-public protocol ProcessEnergySampling: Sendable {
-    func sample() async -> (deltas: [ProcessDelta], unreadable: UnreadableSummary)
+public protocol ProcessEnergySampling: AnyObject {
+    func sample() -> (deltas: [ProcessDelta], unreadable: UnreadableSummary)
 }
-public protocol BatterySampling: Sendable { func read() async -> BatteryState }
+public protocol BatterySampling: AnyObject { func read() -> BatteryState }
 
 public protocol SamplingEngineProtocol: Actor {
     func setCadence(_ cadence: SamplingCadence)
     nonisolated var ticks: AsyncStream<SampleTick> { get }            // tek tüketici: OhmRuntime
 }
+// Somut actor'ün kurucusu:
+//   init(process: sending any ProcessEnergySampling, component: sending any ComponentSampling,
+//        systemLoad: sending any SystemLoadSampling, battery: sending any BatterySampling)
 
 // MARK: Ledger (ADR 0002)
 public protocol EnergyLedgerWriting: Actor {
@@ -131,7 +140,8 @@ public protocol EnergyLedgerWriting: Actor {
     func flush() async throws                                          // dakika sınırında tek transaction
     func maintain(now: Date) async throws                             // rollup + budama + incremental_vacuum
 }
-public protocol EnergyLedgerReading: Sendable {                       // widget ve CLI için eşzamanlı (sync)
+public protocol EnergyLedgerReading: AnyObject {                      // Sendable DEĞİL: her çağıran kendi örneğini
+                                                                     // kurar ve tek izolasyon alanında kullanır (sync)
     func receipt(for interval: DateInterval, source: PowerSourceKind?) throws -> Receipt
     func systemSeries(for interval: DateInterval, resolution: LedgerResolution) throws -> [SystemPoint]
 }
@@ -139,8 +149,12 @@ public protocol EnergyLedgerReading: Sendable {                       // widget 
 // MARK: Governor (ADR 0004)
 public enum Effect: Int, Sendable, Codable, Comparable { case none = 0, eCore = 1, freeze = 2 }
 public enum EffectOrigin: Sendable, Hashable, Codable { case manual, rule(UUID), runaway, cli }
-public struct DesiredEffect: Sendable, Equatable {
-    public var requested: Set<Effect>          // Governor, güvenlik vetosundan geçen en yüksek etkiyi uygular
+public enum FrontmostPolicy: String, Sendable, Codable { case release, keep }
+public struct FreezeParams: Sendable, Equatable { public var minHiddenSeconds: Int }        // birleşim: max (≥ 300)
+public struct ECoreParams: Sendable, Equatable { public var whileFrontmost: FrontmostPolicy } // birleşim: .release kazanır
+public struct DesiredEffect: Sendable, Equatable {  // Governor, vetodan geçen en yüksek etkiyi uygular (ADR 0003 § 3)
+    public var freeze: FreezeParams?          // nil → dondurma istenmiyor
+    public var eCore: ECoreParams?            // nil → E-core istenmiyor
     public var origins: [Effect: Set<EffectOrigin>]
 }
 public struct DesiredState: Sendable, Equatable {                     // kural motorunun çıktısı
@@ -176,9 +190,9 @@ Kompozisyon kökü `OhmApp` içinde bir `actor OhmRuntime`'dır. `ticks` akış�
 | Tip | İzolasyon | Yürütücü (executor) ve QoS | Gerekçe |
 |---|---|---|---|
 | `SamplingEngine` | `actor` | Özel `DispatchSerialQueue(label: "dev.ohm.sampling", qos: .utility)` | IOReport ve `proc_pid_rusage` çağrıları eşzamanlı (sync) ve kısa süre bloklayabilir. İş işbirlikçi (cooperative) havuzu bloklamamalı. `.utility` işi E-core'a yönlendirir. |
-| `IOReportSampler`, `ProcessEnergySampler` | `SamplingEngine`'e ait, `Sendable` olmayan `final class` | Aktörün içinde | CF nesneleri (`IOReportSubscriptionRef`, `CFDictionary`) aktörü hiç terk etmez. Bu yüzden `@unchecked Sendable` kullanılmaz. |
+| `IOReportSampler`, `ProcessEnergySampler`, `SystemLoadSampler`, `BatterySampler` | `SamplingEngine`'e ait, `Sendable` olmayan `final class`; sözleşmeleri de `Sendable` değil (§ 2) | Aktörün içinde, eşzamanlı çağrı | CF nesneleri (`IOReportSubscriptionRef`, `CFDictionary`) ve önceki sayaç değerleri aktörü hiç terk etmez. Aktöre `sending` parametreyle devredilirler. `@unchecked Sendable` kullanılmaz. |
 | `EnergyLedger` | `actor` | `DispatchSerialQueue(label: "dev.ohm.ledger", qos: .utility)`; bakım işleri `.background` | Tek `sqlite3*` yazma bağlantısı. Bloklayan G/Ç işbirlikçi havuzun dışında kalır. |
-| `LedgerReader` | `final class`, `Sendable` değil | Çağıranın bağlamı (widget timeline provider, CLI ana iş parçacığı) | Salt okunur bağlantı, kısa ömürlü. Süreçler arası paylaşılmaz. |
+| `LedgerReader` | `final class`; sözleşmesi (`EnergyLedgerReading`) de `Sendable` değil | Çağıranın bağlamı (widget timeline provider, CLI ana iş parçacığı) | Salt okunur bağlantı, kısa ömürlü. Her çağıran kendi örneğini kurar; örnek izolasyon alanları arasında paylaşılmaz. |
 | `Governor` | `actor` | `DispatchSerialQueue(label: "dev.ohm.governor", qos: .userInitiated)` | Çözme yolu gecikmeye duyarlı (hedef: aktivasyondan <300 ms). Dondurma işleri seyrek ve kısa. Journal G/Ç'si de bu kuyrukta. |
 | `RuleEngine`, `BatteryForecaster`, `RunawayDetector` | `actor` (varsayılan yürütücü) | Çağrı `Task(priority: .utility)` içinden | Saf hesap, bloklamaz. |
 | `NLRuleParser` | `Sendable` `struct` | `Task(priority: .userInitiated)` | Kullanıcı sonucu bekliyor. `LanguageModelSession` çağrı başına kurulur, sonra bırakılır. |
@@ -187,6 +201,7 @@ Kompozisyon kökü `OhmApp` içinde bir `actor OhmRuntime`'dır. `ticks` akış�
 | `AppModel` ve bütün görünüm durumu | `@MainActor @Observable final class` | Ana | Yalnız `DashboardSnapshot` (değer tipi) alır. |
 
 - **App target'ı** Swift 6.2'deki varsayılan izolasyonu kullanır (`defaultIsolation(MainActor.self)`). **OhmCore target'ları** varsayılan olarak `nonisolated` kalır; izolasyon açıkça `actor` ile verilir. Böylece çekirdek kodun yanlışlıkla ana iş parçacığında çalışması engellenir.
+- **Seçilen izolasyon modeli: "actor içinde hapsedilmiş, Sendable olmayan uygulamalar".** Durum tutan her bileşen (`Sendable` olmayan sınıf) tam olarak bir actor'e veya çağıranın tek izolasyon alanına aittir. Sözleşmesi de `Sendable` olarak işaretlenmez; `Sendable` protokol ile `Sendable` olmayan uygulama çelişkisi kalmaz. Model, bu ADR yazılırken minimal bir örnekle Swift 6.4'te doğrulandı: `swiftc -swift-version 6 -strict-concurrency=complete -target arm64-apple-macos26.0 -typecheck` → exit 0. Örnekte `SamplingEngine(processSampler: sending any ProcessEnergySampling)` bir `DispatchSerialQueue` yürütücüsüyle ve `@MainActor` içinde kurulan bir `LedgerReader` vardı. T-020 iskeleti aynı kontrolü CI'da çalıştırır.
 - **Sınırı geçen her tip değer tipidir** (`struct` veya `enum`, `Sendable`). Sınırı sınıf geçmez. `@unchecked Sendable` ve `nonisolated(unsafe)` yalnız `COhmSys` sarmalayıcısında, gerekçe yorumuyla birlikte kullanılabilir. Tek istisna ADR 0004'teki sinyal tablosu: C tarafında `_Atomic` dizi olarak durur.
 - **Akış politikaları:** `ticks` kaybetmez (`.unbounded`; tick'ler seyrek, tüketici `await` ederek ilerliyor). UI'a giden `DashboardSnapshot` akışı `.bufferingNewest(1)` kullanır, çünkü eski kareler çizilmez. `GovernorEvent` akışı `.bufferingNewest(64)` kullanır.
 - **İptal:** Her uzun döngü `Task.isCancelled` kontrol eder. Uygulama kapanışında ADR 0004'teki `thawAll` çalışır; bu çağrı iptal edilmeden, eşzamanlı olarak ve süre sınırı içinde tamamlanır.
