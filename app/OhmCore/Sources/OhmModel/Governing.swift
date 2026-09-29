@@ -6,14 +6,9 @@ extension AppKey {
     public static func bundle(_ id: String) -> AppKey { AppKey(kind: .bundleID, value: id) }
 }
 
-public enum Effect: Int, Sendable, Codable, Comparable {
-    case none = 0, eCore = 1, freeze = 2
-    public static func < (a: Effect, b: Effect) -> Bool { a.rawValue < b.rawValue }
-}
+// Effect, FrontmostPolicy, FreezeParams, ECoreParams, DesiredEffect and DesiredState live in RuleTypes.swift.
 
-public enum EffectOrigin: Sendable, Hashable, Codable {
-    case manual, rule(UUID), runaway, cli
-
+extension EffectOrigin {
     /// Journal representation (ADR 0004 § 5): "manual" | "rule:<UUID>" | "runaway" | "cli".
     public var journalValue: String {
         switch self {
@@ -25,37 +20,6 @@ public enum EffectOrigin: Sendable, Hashable, Codable {
     }
 
     public var isRule: Bool { if case .rule = self { true } else { false } }
-}
-
-public enum FrontmostPolicy: String, Sendable, Codable { case release, keep }
-
-/// Merge rule: max over contributions, never below the Governor floor (300 s). ADR 0003 § 3.
-public struct FreezeParams: Sendable, Equatable {
-    public var minHiddenSeconds: Int
-    public init(minHiddenSeconds: Int) { self.minHiddenSeconds = minHiddenSeconds }
-}
-
-/// Merge rule: `.release` wins. ADR 0003 § 3.
-public struct ECoreParams: Sendable, Equatable {
-    public var whileFrontmost: FrontmostPolicy
-    public init(whileFrontmost: FrontmostPolicy = .release) { self.whileFrontmost = whileFrontmost }
-}
-
-/// The Governor applies the highest effect that passes the safety vetoes (ADR 0003 § 3).
-public struct DesiredEffect: Sendable, Equatable {
-    public var freeze: FreezeParams?
-    public var eCore: ECoreParams?
-    public var origins: [Effect: Set<EffectOrigin>]
-    public init(freeze: FreezeParams? = nil, eCore: ECoreParams? = nil, origins: [Effect: Set<EffectOrigin>] = [:]) {
-        self.freeze = freeze
-        self.eCore = eCore
-        self.origins = origins
-    }
-}
-
-public struct DesiredState: Sendable, Equatable {
-    public var effects: [AppKey: DesiredEffect]
-    public init(effects: [AppKey: DesiredEffect] = [:]) { self.effects = effects }
 }
 
 /// Journal `reason` values (ADR 0004 § 5). `rollback` is used by the § 4 pseudo-code;
