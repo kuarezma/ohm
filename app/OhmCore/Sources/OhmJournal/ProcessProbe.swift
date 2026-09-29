@@ -25,6 +25,12 @@ public enum ProcessProbe {
         startAbs(id.pid) == id.startAbsTime
     }
 
+    /// Same process and not a zombie (an exited child its parent has not reaped still has rusage).
+    public static func isLive(_ id: ProcessIdentity) -> Bool {
+        guard matches(id), let info = bsdInfo(id.pid) else { return false }
+        return info.pbi_status != UInt32(SZOMB)
+    }
+
     public static func bsdInfo(_ pid: Int32) -> proc_bsdinfo? {
         guard pid > 0 else { return nil }
         var info = proc_bsdinfo()

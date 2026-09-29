@@ -2,6 +2,10 @@ import Foundation
 
 // ADR 0001 § 2 (MARK: Governor) and ADR 0004. Value types only; the Governor actor lives in OhmGovernor.
 
+extension AppKey {
+    public static func bundle(_ id: String) -> AppKey { AppKey(kind: .bundleID, value: id) }
+}
+
 public enum Effect: Int, Sendable, Codable, Comparable {
     case none = 0, eCore = 1, freeze = 2
     public static func < (a: Effect, b: Effect) -> Bool { a.rawValue < b.rawValue }

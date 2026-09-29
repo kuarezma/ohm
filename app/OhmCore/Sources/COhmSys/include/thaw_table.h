@@ -9,7 +9,7 @@
 
 #define OHM_THAW_TABLE_CAPACITY 256
 
-/// Adds pid (idempotent). Returns 0 on success, -1 if the table is full or pid <= 0.
+/// Adds pid (idempotent). Returns 0 on success, -1 if the table is full or pid <= 1.
 int ohm_thaw_table_add(pid_t pid);
 /// Removes pid if present. Returns 1 if removed, 0 if absent.
 int ohm_thaw_table_remove(pid_t pid);

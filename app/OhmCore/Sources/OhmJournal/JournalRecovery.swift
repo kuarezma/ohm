@@ -52,7 +52,7 @@ public enum JournalRecovery {
                 let roots = g.pids.filter { $0.role == .root }
                 let helpers = g.pids.filter { $0.role != .root }
                 for p in helpers.reversed() + roots {
-                    if ProcessProbe.matches(p.identity) {
+                    if p.pid > 1, ProcessProbe.matches(p.identity) {
                         kill(p.pid, SIGCONT)
                         report.thawed.append(p)
                     } else {
@@ -61,7 +61,7 @@ public enum JournalRecovery {
                 }
             case .eCore:
                 for p in g.pids.reversed() {
-                    if ProcessProbe.matches(p.identity) {
+                    if p.pid > 1, ProcessProbe.matches(p.identity) {
                         setpriority(PRIO_DARWIN_PROCESS, id_t(p.pid), 0)
                         report.eCoreCleared.append(p)
                     } else {

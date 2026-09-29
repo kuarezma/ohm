@@ -16,7 +16,7 @@ static const int ohm_signals[] = {
 };
 
 int ohm_thaw_table_add(pid_t pid) {
-    if (pid <= 0) return -1;
+    if (pid <= 1) return -1;
     if (ohm_thaw_table_contains(pid)) return 0;
     for (int i = 0; i < OHM_THAW_TABLE_CAPACITY; i++) {
         int32_t expected = 0;
@@ -54,7 +54,7 @@ int ohm_thaw_table_thaw_all(void) {
     int n = 0;
     for (int i = 0; i < OHM_THAW_TABLE_CAPACITY; i++) {
         int32_t pid = atomic_load(&ohm_slots[i]);
-        if (pid > 0) {
+        if (pid > 1) {
             kill((pid_t)pid, SIGCONT);
             n++;
         }

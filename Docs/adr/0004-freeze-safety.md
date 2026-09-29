@@ -394,3 +394,25 @@ Kural (T-013 kartıyla aynı): Testler yalnız testin kendi başlattığı süre
 - **T-012 PASS:** `setpriority(…, 0)` politikayı başka bir süreçten kaldırıyor, bu yüzden D2 E-core için de tam geçerli. `getpriority` durumu yansıtmıyor. **Karar:** `ECoreLane` kendi kaydını tutar; E-core durumu `setpriority`'den önce journal'a yazılır ve izleyici ile sonraki açılış bunu geri alır (§ 5, § 8, test 16).
 - **Açık kalan tek yedekli karar (T-023 test 13):** `launchAgent` modu doğrulanmadı. Başarısız olursa ürün `spawnedWatcher` moduyla ve sonraki açılışta kurtarmayla çıkar (§ 6, test 22).
 - **Açık kalan doğrulamalar (T-023):** Dock ve Cmd-Tab ile çözme (test 14, elle). Helper'lı uygulamada sıra ve sekme sağlığı (R4). Süreç ağacının sorumlu pid ve paket yolu kuralıyla doğru kurulması (Chrome, Slack, Safari); kurulmazsa `ppid` zinciri ile paket yolu birlikte kullanılır. Test 14 başarısız olursa `freeze` kurallardan kaldırılır ve dondurma yalnız elle yapılan, en fazla 30 dk süren bir işleme iner.
+
+## T-023 sonuçları (2026-09-29, M3, macOS 27, Xcode 27)
+
+Otomatik testler: `cd app/OhmCore && swift test --filter "OhmJournalTests|OhmGovernorTests"` (31 test). Test 1–3, 16 ve 22 ayrı süreçlerle (`OhmTestHost`: Ohm yerine geçen süreç, izleyici, çöken süreç) çalışır; testler yalnız kendi başlattıkları süreçlere sinyal gönderir.
+
+- **Test 13 — PASS (Apple Development imzası).** Uygulamanın imzalı kopyasında `SMAppService.agent(plistName: "dev.ohm.thawd.plist").register()` → `status == .enabled`, launchd `ohm-thawd`'ı çalıştırdı. İzleyici `kill -9` ile öldürülünce launchd onu ~2 sn içinde yeniden başlattı; yeniden başlayan izleyiciyle test 1: `kill -9` sonrasında 43 ms'de `T` → `S`. Test 2 (Ohm ve izleyici birlikte `kill -9`): launchd'nin yeniden başlattığı izleyici 0,3 sn içinde çözdü. Kayıt test sonunda `unregister()` ile kaldırıldı. **Developer ID imzasıyla denenmedi** (Faz 4'te tekrarlanır).
+- **Test 14 — MANUAL.** Uygulama henüz `WorkspaceObserver` → `Governor.handle(_:)` bağlantısını içermiyor (OhmApp T-023 kapsamında değil). Bağlantı yapıldığında kullanıcı şunu yapar: (1) Ohm'da bir test uygulamasını elle dondur (menü çubuğunda ❄ görünür), (2) Dock simgesine tıkla, (3) uygulama 300 ms içinde yanıt vermeli (pencere gelir, `ps -o stat= -p <pid>` `T` göstermez), (4) yeniden dondur, Cmd-Tab ile seç, aynı kontrol. Ölçülebilen kısım test 23'tedir (Faz B altında aktivasyon → SIGCONT 92 ms).
+- **Azaltma 7 (Zorla Çık bildirimi)** gözlenmedi; açık kalır.
+
+**ADR'nin sustuğu yerde seçilen (daha güvenli) davranışlar ve düzeltmeler:**
+1. § 2 "Hata ayıklanıyor": `pbi_flags` için doğru bayrak `PROC_FLAG_TRACED` (2); `P_TRACED` çekirdeğin `p_flag` bitidir.
+2. Ağaç = sorumlu pid'i kök olan **veya** `ppid` zinciri köke ulaşan, yürütülebilir dosyası paket içinde olan süreçler (birleşim). Yollar `realpath` ile karşılaştırılır (`/var` → `/private/var`).
+3. Numaralandırma ile SIGSTOP arasında **kaybolan** bir helper atlanır (durduracak bir şey yok); başlangıç zamanı **farklı** olan pid D10 gereği geri alma tetikler.
+4. Kurtarmada `boot` bilinmiyorsa (`open` kaydı yok veya `sysctl` başarısız) sinyaller yine gönderilir, ama yalnız kimlik doğrulandıktan sonra: doğrulanmış SIGCONT zararsız, donuk bırakmak değil.
+5. `recovered` kaydı kendinden önceki grupları kapatır; izleyici her kurtarmadan sonra bir değişiklik veya 60 sn bekler (yeniden yazma başarısızsa döngü dönmesin). İzleyici journal **dosyasını ve** dizini izler: sona ekleme dizini değiştirmez.
+6. `spawnedWatcher` izleyicisi açık grup beklemeden doğrudan `owner.lock`'ta bloklanır (Ohm onu kilidi tutarken başlatır) ve tek kurtarmadan sonra çıkar. Çocuk varsayılan sinyal durumlarıyla ve boş maskeyle başlatılır.
+7. `reason` değerlerine `rollback` (§ 4 sözde kodu), `protectionLost`, `journalUnwritable`, `frontmost` eklendi. `recovered` kaydı `count` ve `apps` alanlarını taşır; helper'lar 32'lik kayıtlara bölünür (< 4 KB).
+8. E-core'a da statik kapsam kapısı uygulanır (`.regular` şartı hariç): sistem yolları ve `com.apple.` süreçleri `PRIO_DARWIN_BG` almaz.
+9. İşlem sürerken görülen bir aktivasyon, `isActive` henüz güncellenmemiş olsa bile `.frontmost` vetosudur (`NSRunningApplication` özellikleri ana run loop turunda yenilenir).
+10. Sağlık kontrolü `terminated`, `quit`, `powerOff` ve `rollback` çözmelerinden sonra yapılmaz; ebeveyni tarafından henüz toplanmamış (zombi) bir üye "sonlanmış" sayılır.
+11. Güç iddiası vetosu: seviyesi 0 olmayan **her** IOPM iddiası. `AXEdited` vetosu doğrulanmadığı için uygulanmadı.
+12. "Hepsini çöz" (`.user`) yalnız dondurmayı çözer; `quit`, `powerOff`, `protectionLost`, `journalUnwritable` E-core'u da kaldırır. Sinyal yolları pid ≤ 1'i reddeder.
