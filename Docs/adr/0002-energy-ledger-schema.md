@@ -1,6 +1,6 @@
 # ADR 0002: Enerji defteri (ledger) şeması, atıf ve pil dakikası
 
-- **Durum:** Önerildi (T-001). Şef review'u ve T-001b ikinci görüşü bekleniyor.
+- **Durum:** Önerildi (T-001). Şef review'u ve T-001b ikinci görüşü bekleniyor. Faz 0 spike sonuçları işlendi (`spikes/README.md`, `main` 5773b60).
 - **Tarih:** 2026-09-29
 - **İlgili:** ADR 0001 (tek yazar, okuyucular, `SampleTick`), T-022 (uygulama), T-033 (widget ve CLI), T-041 (tahmin)
 
@@ -14,6 +14,10 @@ Ohm'un ana vaadi "pil fişi": uygulama başına enerji, "pil dakikası" ve "pil 
 4. **Neye atfedilemez?** Ekran, radyolar, SSD ve platformun boştaki gücü hiçbir sürece ait değil. Plan bunları "Diğer (ekran, radyo)" satırında göstermeyi öngörüyor.
 
 Kaynak olgular (SDK başlığından doğrulandı): `RUSAGE_INFO_CURRENT == RUSAGE_INFO_V6`; `struct rusage_info_v6` içinde `ri_energy_nj`, `ri_penergy_nj` (P-core payı), `ri_proc_start_abstime` ve `ri_user_time`/`ri_system_time` alanları var. `responsibility_get_pid_responsible_for_pid` başlıkta yok ama `libquarantine.dylib`'den export ediliyor ve bu makinede (macOS 27.0) çalışıyor. Bu fonksiyon özel SPI, bu yüzden `dlsym` ile opsiyonel olarak yüklenir.
+
+Faz 0 ölçümleri (M3, macOS 27, sudo yok):
+- **T-011 PASS:** Sayaçlar aynı kullanıcının süreçleri için çalışıyor. `yes` = 4,35 W, `P_share` 1,00. 668 pid'in 268'i (~%40) `EPERM` döndürüyor; bunlar root ve başka kullanıcıların süreçleri. CPU zamanı alanları mach tick cinsinden.
+- **T-010 PARTIAL:** IOReport CPU, DRAM ve ANE enerji sayaçları saniyelik güncellenmiyor, yalnız seyrek patlamalar halinde geliyor. `GPU Energy` (nJ) saniyelik canlı. Sistem gücü `PowerTelemetryData.SystemLoad` ile pilde ve adaptörde okunabiliyor (boşta 3,8 W, tek `yes` ile 7,4 W) ve ~20 sn'de bir güncelleniyor. `Voltage × Amperage` yalnız deşarjda sistem gücüdür; adaptörde şarj gücünü gösterir.
 
 ## Karar
 
@@ -56,6 +60,8 @@ resolve(pid):
 - Delta, aynı `ProcessIdentity` için iki okuma arasındaki farktır. Bir kimlik ilk kez görüldüğünde iki durum var:
   - Süreç bir önceki tick'ten **sonra** başlamışsa (`start ≥ önceki tick`), sayacın tamamı bu aralığa yazılır.
   - Aksi halde (Ohm yeni açıldı veya `suspended` durumdan dönüldü) yalnız taban çizgisi alınır ve delta 0 olur. Ohm'dan önceki enerji bugüne yazılmaz.
+- Kimlik `ProcessIdentity(pid, ri_proc_start_abstime)` olarak tutulur; spike'ta kullanılan yöntem budur. Başlangıç zamanı, enerjiyle aynı `proc_pid_rusage` çağrısından gelir ve ek sistem çağrısı gerektirmez.
+- `ri_user_time` ve `ri_system_time` mach tick cinsindendir. `cpu_ms`'e `mach_timebase_info` ile çevrilir.
 - Sayaç geriye giderse (beklenmez) delta 0 alınır, taban çizgisi yenilenir ve olay loglanır.
 - Tick aralığı bir dakika sınırını geçiyorsa delta iki dakikaya süreyle orantılı bölünür.
 - Aralıklar monotonik saatle ölçülür. Dakika anahtarı duvar saatinden hesaplanır (`t_min = floor(unix_sn / 60)`, UTC). Saat geri atlarsa aynı dakikaya ikinci yazma `UPSERT` ile toplanır.
@@ -110,15 +116,14 @@ CREATE TABLE system_1m (
   t_min            INTEGER NOT NULL,
   source           INTEGER NOT NULL CHECK (source IN (0, 1, 2)),
   covered_ms       INTEGER NOT NULL CHECK (covered_ms BETWEEN 0 AND 60000),  -- örneklerin kapsadığı süre
-  battery_uj       INTEGER,        -- ∫ V·I dt, yalnız pildeyken; ölçüm yoksa NULL
-  cpu_p_uj         INTEGER,        -- IOReport (T-010); yoksa NULL
-  cpu_e_uj         INTEGER,
-  gpu_uj           INTEGER,
-  ane_uj           INTEGER,
-  dram_uj          INTEGER,
+  sysload_uj       INTEGER,        -- ∫ PowerTelemetryData.SystemLoad dt (basamak fonksiyonu); pilde ve AC'de; yoksa NULL
+  sysload_cov_ms   INTEGER NOT NULL DEFAULT 0,  -- sysload_uj'nin gerçekten ölçüldüğü süre
+  batt_vi_uj       INTEGER,        -- ∫ V·I dt, yalnız deşarjda; SystemLoad yoksa yedek, varsa çapraz kontrol
+  gpu_uj           INTEGER,        -- IOReport "GPU Energy" (nJ, canlı) / 1000; yoksa NULL
   attributed_uj    INTEGER NOT NULL,   -- bu (t_min, source) için Σ slice_1m.energy_uj
   tail_uj          INTEGER NOT NULL,   -- eşik altı uygulamaların toplamı (satırı yazılmayanlar)
-  unreadable_count INTEGER NOT NULL,   -- enerjisi okunamayan süreç sayısı (dakikanın son tick'i)
+  readable_count   INTEGER NOT NULL,   -- enerjisi okunabilen süreç sayısı (dakikanın son tick'i)
+  unreadable_count INTEGER NOT NULL,   -- EPERM dönen süreç sayısı (root ve diğer kullanıcılar)
   battery_pct      INTEGER,            -- dakika sonu, IOPS yüzdesi
   voltage_mv       INTEGER,            -- dakika ortalaması
   raw_charge_mah   INTEGER,            -- AppleRawCurrentCapacity (coulomb sayacı), dakika sonu
@@ -140,19 +145,36 @@ CREATE TABLE slice_1h (
 CREATE INDEX slice_1h_by_app ON slice_1h (app_id, t_hour);  -- uygulama detay grafiği
 
 CREATE TABLE system_1h (
-  t_hour         INTEGER NOT NULL,
-  source         INTEGER NOT NULL,
-  covered_ms     INTEGER NOT NULL,
-  battery_uj     INTEGER,
-  battery_cov_ms INTEGER NOT NULL,     -- battery_uj'nin gerçekten ölçüldüğü süre (NULL'lar hariç)
-  cpu_p_uj INTEGER, cpu_e_uj INTEGER, gpu_uj INTEGER, ane_uj INTEGER, dram_uj INTEGER,
-  attributed_uj  INTEGER NOT NULL,
-  tail_uj        INTEGER NOT NULL,
-  charge_used_mah INTEGER,             -- saat içindeki pil serilerinde Σ max(0, Δraw_charge_mah)
-  voltage_mv_avg INTEGER,
-  fcc_mah        INTEGER,              -- saat sonundaki değer
-  thermal_max    INTEGER,
+  t_hour           INTEGER NOT NULL,
+  source           INTEGER NOT NULL,
+  covered_ms       INTEGER NOT NULL,
+  sysload_uj       INTEGER,
+  sysload_cov_ms   INTEGER NOT NULL,
+  batt_vi_uj       INTEGER,
+  gpu_uj           INTEGER,
+  attributed_uj    INTEGER NOT NULL,
+  tail_uj          INTEGER NOT NULL,
+  readable_avg     INTEGER NOT NULL,   -- saat içindeki ortalama okunabilen süreç sayısı
+  unreadable_avg   INTEGER NOT NULL,
+  charge_used_mah  INTEGER,            -- saat içindeki pil serilerinde Σ max(0, Δraw_charge_mah); T-041 ve çapraz kontrol
+  voltage_mv_avg   INTEGER,
+  fcc_mah          INTEGER,            -- saat sonundaki değer
+  thermal_max      INTEGER,
   PRIMARY KEY (t_hour, source)
+) STRICT, WITHOUT ROWID;
+
+-- IOReport "Energy Model" patlamaları (T-010: CPU/DRAM/ANE sayaçları seyrek yayımlanıyor).
+-- Her satır bir önceki patlamadan bu patlamaya kadar olan pencereyi kapsar. Canlı gösterimde kullanılmaz;
+-- yalnız uzun pencere ortalaması ve "Sistem (okunamayan süreçler)" tahmini için. 90 gün tutulur.
+CREATE TABLE energy_burst (
+  start_s          INTEGER NOT NULL,
+  end_s            INTEGER NOT NULL CHECK (end_s > start_s),
+  cpu_uj           INTEGER,            -- "CPU Energy" deltası (mJ etiketi → µJ)
+  dram_uj          INTEGER,
+  ane_uj           INTEGER,
+  readable_cpu_uj  INTEGER NOT NULL,   -- aynı pencerede okunabilen süreçlerin Σ Δri_energy_nj / 1000
+  covered_ms       INTEGER NOT NULL,   -- pencerede Ohm'un örnekleme yaptığı süre (uyku/boşluk hariç)
+  PRIMARY KEY (start_s)
 ) STRICT, WITHOUT ROWID;
 
 -- Örnekleme boşlukları (arayüzde "veri yok" gölgesi; covered_ms'i açıklar).
@@ -194,13 +216,13 @@ ORDER BY energy_uj DESC;
 |---|---|---|
 | `slice_1m`, `system_1m` | 48 saat | Dakikada ~40 aktif uygulama × 2880 ≈ 115 bin satır, ~4 MB |
 | `slice_1h`, `system_1h` | 90 gün | ~60 uygulama × 24 × 90 ≈ 130 bin satır, ~5 MB |
-| `sampling_gap` | 90 gün | Önemsiz |
+| `sampling_gap`, `energy_burst` | 90 gün | Önemsiz (patlamalar seyrek) |
 | `app` | Referansı kalmayan ve `last_seen` > 90 gün olan satır silinir | Önemsiz |
 
 `EnergyLedger.maintain(now:)` açılışta ve her saat başından 5 dk sonra `.background` QoS ile çalışır. Adımlar tek transaction içindedir:
 
 1. **Rollup:** Bitmiş her saat için `slice_1h` ve `system_1h` hesaplanır. Hesap, o saatin bütün `*_1m` satırlarından baştan yapılır (`INSERT … ON CONFLICT DO UPDATE SET … = excluded.…`, yani toplama değil değiştirme). Bu yüzden işlem idempotent'tir. Geç gelen veriye karşı her çalışmada son 3 saat yeniden hesaplanır. `meta.rolled_through_hour` güncellenir.
-2. **Budama:** `DELETE FROM slice_1m WHERE t_min < :now_min - 2880` (birincil anahtar `t_min` ile başladığı için aralık silmesi ucuz). Aynı işlem `system_1m` için yapılır. Saatlik tablolar ve boşluklar için sınır 90 gündür.
+2. **Budama:** `DELETE FROM slice_1m WHERE t_min < :now_min - 2880` (birincil anahtar `t_min` ile başladığı için aralık silmesi ucuz). Aynı işlem `system_1m` için yapılır. Saatlik tablolar, `sampling_gap` ve `energy_burst` için sınır 90 gündür.
 3. **Alan geri kazanma:** `PRAGMA incremental_vacuum(256)` ve `PRAGMA wal_checkpoint(PASSIVE)`.
 
 **Saat dilimi:** Saatlik kovalar UTC'dir. 48 saatten eski geçmişte gün sınırı yerel saate göre saatlik kovalardan kurulur. Yarım veya çeyrek saatlik ofset kullanan bölgelerde (ör. UTC+5:30, +5:45) bu, eski günlerde ±30/45 dakikalık sınır hatası demektir. Bugünün ve dünün fişi bu hatadan etkilenmez.
@@ -213,34 +235,52 @@ Tanımlar (yalnız **pildeyken**, `source = 1` harcanan enerji için):
 E_app       = Σ energy_uj(app, aralık, source=1) · 10⁻⁶                        [J]
 E_full      = fcc_mah · V̄ · 3.6                                                 [J]   (1 mAh × 1 V = 3.6 J)
               V̄ = pildeyken ortalama gerilim (V), son 7 gün
-P_ref       = E_batt(son 7 gün, pilde) / T_batt(son 7 gün, pilde)               [W]
-              E_batt: coulomb sayacından Σ charge_used_mah · V̄ · 3.6 (varsa),
-                      yoksa Σ battery_uj · 10⁻⁶
-              T_batt: aynı ölçümün kapsadığı süre (battery_cov_ms)
+P_ref       = Σ sysload_uj(pilde, son 7 gün) · 10⁻⁶ / Σ sysload_cov_ms(…) · 10⁻³  [W]
+              (SystemLoad yoksa aynı hesap batt_vi_uj ile; ikisi de yoksa P_ref yok)
 pil_yüzdesi = 100 · E_app / E_full
 pil_dakikası = E_app / P_ref / 60
 ```
 
 - **Anlamı:** "Bu uygulamanın pildeyken harcadığı enerji, senin tipik kullanımında X dakikalık pile denk." Eşdeğeri: `pil_yüzdesi × (tam pilin tipik ömrü)`.
 - **`P_ref` için yeterlilik:** Son 7 günde en az 1 saatlik pil ölçümü olmalı. Yoksa bugünün pil ölçümü kullanılır (en az 10 dk). O da yoksa dakika gösterilmez; yalnız yüzde ve Wh gösterilir.
-- **Şarjdayken** harcanan enerji pil dakikasına çevrilmez. Fişte ayrı bir "şarjdayken: X Wh" sütunu olarak gösterilir.
-- **"Diğer (ekran, radyo)" satırı**, fiş aralığının tamamı üzerinden hesaplanır. Dakika başına hesaplanıp sonra kırpılmaz; böylece örnekleme zamanlaması kaynaklı kaymalar birbirini götürür:
-  ```
-  Diğer = max(0, Σ battery_uj − Σ (attributed_uj + tail_uj))   yalnız battery_uj IS NOT NULL olan dakikalar
-  ```
-  Toplam, tanım gereği ölçülen pil enerjisine eşittir: uygulamalar + eşik altı + Diğer = pil.
-- **IOReport varsa (T-010)** detay görünümü "Diğer" satırını ikiye ayırır. Birinci parça ekran, radyo ve platform: `battery − (cpu_p + cpu_e + gpu + ane + dram)`. İkinci parça atfedilemeyen işlem gücü (sistem, kısa ömürlü ve okunamayan süreçler): `(cpu_p + cpu_e + gpu + ane) − (attributed + tail)`.
-- **Tutarsızlık bayrağı:** Bir aralıkta `Σ(attributed + tail) > Σ battery · 1.05` ise, atfedilen enerji ölçülen pil enerjisinden fazla demektir. Bu durumda arayüz "ölçüm tutarsız" uyarısı gösterir ve Diğer satırı 0 yazılmak yerine gizlenir. Bu, T-011 modelinin gerçek dünyada sapmasını görünür kılar.
+- **Şarjdayken** harcanan enerji pil dakikasına çevrilmez. Fişte ayrı bir "şarjdayken: X Wh" sütunu olarak gösterilir. `SystemLoad` adaptörde de geçerli olduğu için aşağıdaki satırlar şarjdayken de hesaplanır.
+- `charge_used_mah` (coulomb sayacı) `P_ref` için kullanılmaz. `SystemLoad` ile çapraz kontrol ve T-041 için saklanır.
+
+**Fiş satırları.** Bütün satırlar fiş aralığının tamamı üzerinden hesaplanır ve yalnız `sysload_uj IS NOT NULL` olan dakikaları kapsar. Dakika başına hesaplanıp kırpılmaz; böylece `SystemLoad`'ın ~20 sn'lik güncelleme gecikmesi ve örnekleme zamanlaması kaynaklı kaymalar aralık üzerinde birbirini götürür.
+
+```
+A  = Σ attributed_uj                 (uygulamalar ve okunabilen macOS hizmetleri, satır satır)
+t  = Σ tail_uj                       ("küçük süreçler")
+G  = Σ gpu_uj                        ("GPU": süreçlere bölünmez, uygulama başına GPU atfı yok)
+R  = max(0, Σ sysload_uj − A − t − G)                  atfedilemeyen kalan
+ρ  = Σ_b max(0, cpu_uj − readable_cpu_uj) / Σ_b covered_ms     son 7 gündeki energy_burst satırları b
+S  = min(R, ρ · T_aralık)            "Sistem (okunamayan süreçler)": yalnız son 7 günde en az bir patlama varsa
+D  = R − S                           "Diğer (ekran, radyo)"
+```
+
+| Fiş satırı | Değer | Not |
+|---|---|---|
+| Uygulamalar (`category = 0`) | `slice_*` toplamları | Pil dakikası ve yüzdesi burada |
+| macOS hizmetleri (`category = 1`) | `slice_*` toplamları | Okunabilen sistem süreçleri (aynı kullanıcı); tek satırda toplanır, açılabilir |
+| Küçük süreçler | `t` | Dakikada 1 mJ eşiğinin altı |
+| GPU | `G` | Canlı `GPU Energy` |
+| Sistem (okunamayan süreçler) | `S` | Root ve başka kullanıcıların süreçleri (~%40 pid; `unreadable_count / (readable_count + unreadable_count)` oranı satırın açıklamasında gösterilir). Canlı ölçülemez; IOReport patlamalarından tahmin edilir ve "tahmini" etiketi taşır. |
+| Diğer (ekran, radyo) | `D` | Ekran, Wi-Fi, Bluetooth, SSD, platformun boştaki gücü, dönüştürme kayıpları |
+
+- Satırların toplamı tanım gereği ölçülen sistem enerjisine eşittir (`A + t + G + S + D = Σ sysload_uj`, `R` kırpılmadıysa).
+- **Patlama yoksa** (son 7 günde hiç `energy_burst` yok): `S` hesaplanmaz. `R` tek satırda "Diğer (ekran, radyo, sistem)" olarak gösterilir ve açıklamada okunamayan süreç oranı yazılır. Okunamayan süreçlerin enerjisi hiçbir durumda "ekran, radyo" etiketli satıra sessizce katılmaz.
+- **Tutarsızlık bayrağı:** Bir aralıkta `A + t + G > Σ sysload_uj · 1.05` ise atfedilen enerji ölçülen sistem enerjisinden fazla demektir. Bu durumda arayüz "ölçüm tutarsız" uyarısı gösterir ve `S` ile `D` satırları 0 yazılmak yerine gizlenir. Bu uyarı, `ri_energy_nj` modelinin sapmasını veya GPU'nun iki kez sayıldığını (§ Spike'a bağlı) görünür kılar.
 
 ### 6. Dürüst sınırlar (arayüzdeki "bu sayı ne demek?" metninin kaynağı)
 
-1. `ri_energy_nj` bir **model tahminidir** (çekirdeğin enerji modeli), doğrudan ölçüm değildir. CPU'yu kapsar. GPU'yu kapsayıp kapsamadığını T-011 belirleyecek.
+1. `ri_energy_nj` bir **model tahminidir** (çekirdeğin enerji modeli), doğrudan ölçüm değildir ve CPU'yu kapsar. Uygulama başına GPU enerjisi yoktur; GPU tek bir satırdır.
 2. Ekran, Wi-Fi, Bluetooth, SSD, hoparlör, platformun boştaki gücü ve dönüştürme kayıpları **hiçbir uygulamaya atfedilemez**. Bunlar "Diğer" satırına gider. Bir uygulamanın ekranı açık tutması ya da ağı meşgul etmesi fişte görünmez.
-3. İki örnek arasında doğup ölen süreçlerin enerjisi kaybolur ve "Diğer"e düşer. Popover kapalıyken bu pencere 10 sn'dir. Uzun ömürlü bir süreç öldüğünde de son aralığı kaybolur.
-4. Root ve başka kullanıcıların süreçleri okunamaz (sayı `unreadable_count` ile gösterilir). Bunların enerjisi de "Diğer"e gider. WindowServer, uygulamalar adına ekran birleştirme (compositing) işi yapar ama root süreç olduğu için bu maliyet de "Diğer"dedir.
-5. **"Harcadı" ile "kapatırsan kazanırsın" aynı şey değildir.** Platformun boştaki gücü uygulama kapansa da harcanır. Arayüz "yedi" fiilini kullanır, "kazandırır" vaadi vermez. E-core tasarruf tahminleri ayrıca "tahmini" etiketi taşır.
-6. **Dakika kullanıcıya göre ölçeklenir.** Aynı joule, hafif kullanan birinde daha çok dakikaya denk gelir. Yüzde ise kullanımdan bağımsızdır. Arayüz her ikisini de gösterir.
-7. **Ohm'un yüzdesi macOS'un yüzdesiyle aynı olmayabilir.** macOS'un pil yüzdesi yumuşatılmış ve doğrusal olmayan bir göstergedir. Ohm'un yüzdesi enerji tabanlıdır ve tam kapasiteye (FCC, sağlık düzeltmeli) göre hesaplanır.
+3. İki örnek arasında doğup ölen süreçlerin enerjisi kaybolur ve atfedilemeyen kalana (`R`) düşer. Popover kapalıyken bu pencere 10 sn'dir. Uzun ömürlü bir süreç öldüğünde de son aralığı kaybolur.
+4. Root ve başka kullanıcıların süreçleri okunamaz. Faz 0'da bu oran ~%40 pid'di (668'de 268). Bunların enerjisi "Sistem (okunamayan süreçler)" satırında yalnız tahmini olarak görünür. WindowServer, uygulamalar adına ekran birleştirme (compositing) işi yapar ama root süreç olduğu için bu maliyet de o satırdadır.
+5. `SystemLoad` ~20 sn'de bir güncellenir. Dakikalık değerler basamak fonksiyonu integralidir ve tek bir dakikada yanıltıcı olabilir. Fiş bu yüzden yalnız aralık toplamlarını gösterir.
+6. **"Harcadı" ile "kapatırsan kazanırsın" aynı şey değildir.** Platformun boştaki gücü uygulama kapansa da harcanır. Arayüz "yedi" fiilini kullanır, "kazandırır" vaadi vermez. E-core tasarruf tahminleri ayrıca "tahmini" etiketi taşır.
+7. **Dakika kullanıcıya göre ölçeklenir.** Aynı joule, hafif kullanan birinde daha çok dakikaya denk gelir. Yüzde ise kullanımdan bağımsızdır. Arayüz her ikisini de gösterir.
+8. **Ohm'un yüzdesi macOS'un yüzdesiyle aynı olmayabilir.** macOS'un pil yüzdesi yumuşatılmış ve doğrusal olmayan bir göstergedir. Ohm'un yüzdesi enerji tabanlıdır ve tam kapasiteye (FCC, sağlık düzeltmeli) göre hesaplanır.
 
 ### 7. Migration'lar
 
@@ -262,16 +302,16 @@ pil_dakikası = E_app / P_ref / 60
 
 ## Sonuçlar ve riskler
 
-- **(+)** Fişin toplamı ölçülen pil enerjisine eşittir. Bilinmeyen kısım saklanmaz, adıyla gösterilir.
+- **(+)** Fişin toplamı ölçülen sistem enerjisine (`SystemLoad`) eşittir. Bilinmeyen kısım saklanmaz, adıyla gösterilir. Okunamayan süreçler "ekran, radyo" etiketinin içine gizlenmez.
 - **(+)** Tüm hesap SQL ve saf Swift'tir. T-022 donanım olmadan, sabit test verisiyle doğrulanabilir.
 - **(−)** Responsibility SPI özel bir API'dir. macOS güncellemesiyle kaybolabilir. Kaybolursa paket yolu kuralı yine çalışır. Yalnız paket dışı XPC servisleri (WebKit WebContent) kendi satırlarına düşer ve Safari'nin fişi eksik görünür.
-- **Risk:** `V × I` tick anlarında alınan nokta örnekleridir, dakika içi ani yükleri kaçırabilir. `P_ref` bu yüzden coulomb sayacını tercih eder. Dakikalık "Diğer" hesabı ise aralık toplamı üzerinden yapılır, tek tek dakikalar üzerinden yapılmaz.
-- **Risk:** Bir dakikada 1 mJ eşiği, çok sayıda küçük sürecin enerjisini `tail_uj` alanına taşır. Bu enerji fişte "küçük süreçler" olarak ayrıca gösterilebilir.
+- **Risk:** `SystemLoad` ~20 sn'de bir güncellenir; kısa ani yükler ortalamaya karışır. Fiş yalnız aralık toplamlarını gösterdiği için bu kabul edilebilir. `SystemLoad` gelecekteki bir macOS'ta kaybolursa `batt_vi_uj` yedeği yalnız deşarjda çalışır ve şarjdayken "Diğer" hesaplanamaz.
+- **Risk:** "Sistem (okunamayan süreçler)" tahmini seyrek IOReport patlamalarına dayanır. Spike'taki 330 sn'lik bir koşuda hiç patlama gelmedi. Patlama gelmezse satır birleşik "Diğer (ekran, radyo, sistem)" olarak kalır (§ 5).
+- **Risk:** Bir dakikada 1 mJ eşiği, çok sayıda küçük sürecin enerjisini `tail_uj` alanına taşır. Bu enerji fişte "küçük süreçler" satırında gösterilir.
 
-## Spike'a bağlı
+## Spike'a bağlı (Faz 0 sonuçlarıyla çözüldü)
 
-- **T-011:** `ri_energy_nj`'nin GPU'yu kapsayıp kapsamadığı. Kapsıyorsa ek iş yok. Kapsamıyorsa GPU enerjisi "atfedilemeyen işlem gücü" olarak kalır ve arayüz metni "CPU enerjisi" diye düzeltilir.
-- **T-011:** Atıf algoritmasının Chrome, Safari ve bir Electron uygulaması üzerinde beklenen gruplamayı verip vermediği (spike, `responsiblePID` ve `outermostApp` sonuçlarını karşılaştırarak basmalı). Geçmezse `ppid` zinciri ile paket yolu birlikte kullanılır.
-- **T-011:** Okunamayan süreç sayısı. Sayı yüksekse (ör. %30'dan fazla enerji okunamıyorsa) "Diğer" satırı büyür ve arayüz metni buna göre yazılır.
-- **T-010:** IOReport varsa `cpu_*`, `gpu_uj`, `ane_uj` ve `dram_uj` sütunları dolar ve "Diğer" satırı ikiye bölünür. Yoksa bu sütunlar NULL kalır; şema değişmez.
-- **T-010 (pil okuması):** `AppleRawCurrentCapacity` alanının pilde en az dakikalık çözünürlükle güncellenip güncellenmediği. Güncellenmiyorsa `P_ref` yalnız `∫ V·I` ile hesaplanır.
+- **T-011 PASS:** `ri_energy_nj` ve `ri_penergy_nj` doğrudan kullanılır; CPU zamanından tahmin yedeği yok. `EPERM` oranı ~%40 pid. Bu süreçler "Diğer"e değil, tahmini "Sistem (okunamayan süreçler)" satırına yazılır (§ 5). Kimlik için `ri_proc_start_abstime` kullanılır.
+- **T-010 PARTIAL (kesin):** Sistem toplamı `PowerTelemetryData.SystemLoad` (`sysload_uj`), GPU `GPU Energy` (`gpu_uj`). CPU, DRAM ve ANE bileşen enerjisi yalnız `energy_burst` tablosunda uzun pencere olarak tutulur. "Diğer" = `SystemLoad − Σ süreç enerjisi − GPU − Sistem tahmini`, sıfırın altına düşmez. `V × I` yalnız deşarjda yedek olarak kullanılır.
+- **Açık kalan risk (T-021'de ölçülecek):** `ri_energy_nj`'nin GPU işini içerip içermediği. Faz 0 bunu test etmedi. Formül GPU'yu ayrı çıkarıyor. GPU'yu yoğun kullanan bir test uygulamasında sürecin `ri_energy_nj` artışı `GPU Energy` artışıyla birlikte hareket ediyorsa GPU iki kez sayılıyor demektir. Bu durumda `G` terimi `R` formülünden çıkarılır ve GPU satırı "uygulamalar içinde" notuyla gösterilir. Tutarsızlık bayrağı bu durumu sahada da yakalar.
+- **Açık kalan doğrulama (T-021):** Atıf algoritmasının Chrome, Safari ve bir Electron uygulamasında beklenen gruplamayı verip vermediği. Faz 0 bunu ölçmedi. Vermezse `ppid` zinciri paket yolu kuralıyla birlikte kullanılır.

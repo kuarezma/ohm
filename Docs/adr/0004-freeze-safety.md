@@ -1,6 +1,6 @@
 # ADR 0004: Dondurma (SIGSTOP) güvenlik modeli
 
-- **Durum:** Önerildi (T-001). Şef review'u ve T-001b ikinci görüşü (özellikle bu ADR) bekleniyor.
+- **Durum:** Önerildi (T-001). Şef review'u ve T-001b ikinci görüşü (özellikle bu ADR) bekleniyor. Faz 0 spike sonuçları işlendi (`spikes/README.md`, `main` 5773b60).
 - **Tarih:** 2026-09-29
 - **İlgili:** ADR 0001 (`Governor`, `ohm-thawd`, `OhmJournal`), ADR 0003 (kural semantiği, vetolar), T-013 (spike), T-023 (uygulama), T-024 (kritik review)
 - **Önem:** Bu ADR, kullanıcı verisini kaybettirebilecek tek yolu yönetiyor. Aşağıdaki değişmezlerden biri bozulursa dondurma özelliği kapatılır.
@@ -21,6 +21,13 @@
 | T8 | Zamana duyarlı olaylar kaçar | Takvim alarmı, mesaj veya hatırlatıcı gelmez. Veri kaybı değil ama zarar. |
 | T9 | Journal bozulur veya iki yazar çakışır | Hangi süreçlerin donuk olduğu bilgisi kaybolur ve T1'e dönüşür. |
 
+Faz 0 ölçümleri (M3, macOS 27; T-012, T-013):
+- Donuk (SIGSTOP) bir uygulama `open -a` ile aktive edildiğinde `NSWorkspace.didActivateApplicationNotification` yine geliyor. Aktivasyon, uygulamanın iş birliğini gerektirmiyor. Aktivasyondan SIGCONT'a kadar geçen süre 17–18 ms.
+- **Öndeki uygulama yeniden aktive edilirse bildirim gelmiyor.** Gizleme (`NSRunningApplication.hide()`) uygulamanın çalışmasını gerektirdiği için SIGSTOP'tan **önce** yapılmalı.
+- Ajan `kill -9` ile öldürüldüğünde ayrı bir izleyici süreç 36–39 ms içinde çözdü. İkisi birlikte öldürüldüğünde, bir sonraki açılışta journal'dan kurtarma süreci çözdü. Pid yeniden kullanımına karşı `ri_proc_start_abstime` kullanıldı.
+- `getpriority(PRIO_DARWIN_PROCESS, pid)` BG politikası uygulanmışken de 0 döndürüyor. Politika durumu sistemden okunamıyor. `setpriority(…, 0)` politikayı başka bir süreçten kaldırabiliyor.
+- Dock tıklaması ve Cmd-Tab otomasyonla test edilemedi, **elle doğrulanmadı**.
+
 Kaynak olgular (SDK ve man sayfasından doğrulandı): CoreAudio `kAudioHardwarePropertyTranslatePIDToProcessObject`, `kAudioProcessPropertyIsRunningOutput`, `kAudioProcessPropertyIsRunningInput`; CoreGraphics `CGGetEventTapList` (`CGEventTapInformation.tappingProcess`); IOKit `IOPMCopyAssertionsByProcess`; `sysctl kern.bootsessionuuid`; HIServices `kAXEditedAttribute` ("AXEdited"). `PRIO_DARWIN_BG` hakkında `setpriority(2)` man sayfası şunu söylüyor: "disk IO is throttled … network IO is throttled for any sockets opened after going into background state".
 
 ## Karar
@@ -29,12 +36,13 @@ Kaynak olgular (SDK ve man sayfasından doğrulandı): CoreAudio `kAudioHardware
 
 - **D1 — Önce yaz (write-ahead):** Aynı `(pid, start)` kimliğini içeren journal kaydı yazılıp `fsync` başarıyla dönmeden hiçbir sürece SIGSTOP gönderilmez. Çözmeyi garanti eden `ohm-thawd` süreci o an canlı değilse de gönderilmez.
 - **D2 — Etkiler Ohm'un ömrüyle sınırlıdır:** Ohm hangi yoldan sonlanırsa sonlansın, durdurduğu her süreç SIGCONT alır ve koyduğu her `PRIO_DARWIN_BG` politikası kaldırılır. Hiçbir etki Ohm yeniden başladıktan sonra kendiliğinden geri gelmez.
-- **D3 — Kimlik:** Ohm yalnız `(pid, başlangıç zamanı)` kaydıyla eşleşen ve aynı önyükleme oturumunda (`kern.bootsessionuuid`) başlamış süreçlere sinyal gönderir. Kimlik, sinyalden hemen önce yeniden okunur.
+- **D3 — Kimlik:** Ohm yalnız `(pid, ri_proc_start_abstime)` kaydıyla eşleşen ve aynı önyükleme oturumunda (`kern.bootsessionuuid`) başlamış süreçlere sinyal gönderir. Kimlik, sinyalden hemen önce `proc_pid_rusage` ile yeniden okunur. Mach mutlak zamanı her önyüklemede sıfırlandığı için önyükleme oturumu kontrolü zorunludur.
 - **D4 — Son anda kontrol:** Aşağıdaki "asla dondurma" kuralları, SIGSTOP'tan hemen önce, aynı `Governor` turunda kontrol edilir.
 - **D5 — Aktivasyon her zaman çözer:** Donuk bir uygulama aktive edilirse çözülür. Hiçbir kural ya da ayar bunu engelleyemez.
 - **D6 — Tek yazar:** Journal'a aynı anda en fazla bir süreç yazar. Bu `flock` ile zorlanır.
 - **D7 — Görünürlük:** Donuk bir uygulama varken bu durum menü çubuğunda görünür. "Hepsini çöz" en fazla iki tıklama uzaklıktadır ve uygulama olmadan da çalışır (`ohm thaw --all`).
 - **D8 — Kapanış sırasında dondurma yok:** Oturum kapatma, yeniden başlatma veya kapatma başladığında her şey çözülür ve yeni dondurma yapılmaz.
+- **D9 — Yalnız ön planda olmayan ve gizlenmiş uygulama:** Ön plandaki uygulama (`isActive`) hiçbir yoldan dondurulamaz; buna elle dondurma da dahildir. Her `.regular` uygulama, SIGSTOP'tan önce `hide()` ile gizlenir ve `isHidden` doğrulanır. Gerekçe (T-013): Öndeki bir uygulamanın yeniden aktive edilmesi `didActivateApplicationNotification` üretmiyor. Böyle bir uygulama donarsa D5'in tetikleyicisi hiç gelmez. Gizleme ise uygulamanın çalışıyor olmasını gerektirir, bu yüzden SIGSTOP'tan sonra yapılamaz.
 
 ### 2. Kapsam ve "asla dondurma" listesi
 
@@ -51,7 +59,8 @@ Arka plan süreçleri (`.accessory` ve `.prohibited` uygulamalar, paketsiz süre
 
 | Veto | Nasıl ölçülür | Karşıladığı tehdit |
 |---|---|---|
-| Önde veya görünür | `isActive`; `CGWindowListCopyWindowInfo(.optionOnScreenOnly)` içinde o pid'e ait, katman 0'da bir pencere var mı | T3 (bekleme imleci), D5 |
+| Önde (D9, kesin veto) | `NSRunningApplication.isActive` | D5: öndeki uygulamanın yeniden aktivasyonu bildirim üretmez |
+| Gizlenemedi | `hide()` sonrası 1 sn içinde `isHidden` doğru olmadı veya `CGWindowListCopyWindowInfo(.optionOnScreenOnly)` hâlâ o pid'e ait katman 0 penceresi gösteriyor | T3 (bekleme imleci), D9 |
 | Yakın zamanda aktifti | Son aktivasyondan bu yana geçen süre `< minHiddenSeconds` (genel alt sınır 300 sn; kural bunu yükseltebilir, düşüremez) | Cmd-Tab ile dönüş; titreme |
 | Ses çalıyor veya kaydediyor | CoreAudio: pid → process object → `IsRunningOutput` / `IsRunningInput` | T4, T6 (arama, müzik) |
 | Kamera kullanımda | `kCMIODevicePropertyDeviceIsRunningSomewhere` bir kamerada doğru mu (sistem geneli; süreç başına genel API yok) | T6. Kamera açıkken kurallar hiçbir şeyi dondurmaz. |
@@ -83,10 +92,12 @@ Bu nedenle sezgi, izin zaten verilmişse ve T-023'te doğrulanırsa ek bir veto 
 ```
 freeze(app):
   pre: owner.lock bu süreçte tutuluyor; thawdAlive(); ¬powerOffInProgress; ¬postWakeQuiet
+  guard ¬app.isActive else return .vetoed(.frontmost)                 // D9
   root ← identity(app.processIdentifier)
   tree ← enumerateTree(root)                          // vetolar için ön görüntü
   if let v = SafetyPolicy.vetoes(app, tree): return .vetoed(v)
-  if visible(app): app.hide(); await hidden(≤1 sn) else return .vetoed(.stillVisible)
+  app.hide(); await isHidden ∧ ¬onScreenWindows(≤1 sn) else return .vetoed(.notHidden)   // D9: her zaman, SIGSTOP'tan önce
+  guard ¬app.isActive else return .vetoed(.frontmost) // gizleme sırasında öne gelmiş olabilir
   g ← UUID()
   journal.append(freeze, g, [root]); fsync            // D1: başarısızsa → .failed, sinyal yok
   sigtable.add(root.pid)                              // C tarafı, async-signal-safe tablo
@@ -120,16 +131,17 @@ thaw(g, reason):
 **Biçim:** JSON Lines, UTF-8, satır başına bir kayıt, her satır `\n` ile biter. Örnekteki `…` işaretleri yalnız kısaltmadır; gerçek kayıtta tam UUID bulunur.
 
 ```json
-{"v":1,"seq":1,"ts":1790000000000,"op":"open","boot":"806C0BEF-A3DE-4482-BFAA-3DC5DC943BAA","owner":{"pid":812,"sec":1789999990,"usec":120331}}
-{"v":1,"seq":2,"ts":1790000061000,"op":"freeze","group":"0B1E…","app":"com.tinyspeck.slackmacgap","origin":"rule:8C0D5B2A-…","pids":[{"pid":1402,"sec":1789990000,"usec":5512,"role":"root"}]}
-{"v":1,"seq":3,"ts":1790000061004,"op":"freeze","group":"0B1E…","app":"com.tinyspeck.slackmacgap","origin":"rule:8C0D5B2A-…","pids":[{"pid":1408,"sec":1789990001,"usec":90210,"role":"helper"}]}
-{"v":1,"seq":4,"ts":1790000065000,"op":"ecore","group":"77AF…","app":"com.google.Chrome","origin":"manual","pids":[{"pid":990,"sec":1789980000,"usec":1,"role":"root"}]}
+{"v":1,"seq":1,"ts":1790000000000,"op":"open","boot":"806C0BEF-A3DE-4482-BFAA-3DC5DC943BAA","owner":{"pid":812,"start":1140100000000}}
+{"v":1,"seq":2,"ts":1790000061000,"op":"freeze","group":"0B1E…","app":"com.tinyspeck.slackmacgap","origin":"rule:8C0D5B2A-…","pids":[{"pid":1402,"start":1140144980638,"role":"root"}]}
+{"v":1,"seq":3,"ts":1790000061004,"op":"freeze","group":"0B1E…","app":"com.tinyspeck.slackmacgap","origin":"rule:8C0D5B2A-…","pids":[{"pid":1408,"start":1140145012201,"role":"helper"}]}
+{"v":1,"seq":4,"ts":1790000065000,"op":"ecore","group":"77AF…","app":"com.google.Chrome","origin":"manual","pids":[{"pid":990,"start":1139980000001,"role":"root"}]}
 {"v":1,"seq":5,"ts":1790000400000,"op":"thaw","group":"0B1E…","reason":"activation"}
 {"v":1,"seq":6,"ts":1790000500000,"op":"ecoreOff","group":"77AF…","reason":"ruleEnded"}
 ```
 
 - `op` değerleri: `open` | `freeze` | `thaw` | `ecore` | `ecoreOff` | `recovered`. `reason` değerleri: `activation` | `ruleEnded` | `user` | `maxDuration` | `quit` | `powerOff` | `terminated` | `verifyFailed` | `recovery`.
-- Ohm'dan önce zaten `PRIO_DARWIN_BG` altında olan süreç için (`getpriority(PRIO_DARWIN_PROCESS, pid) == 1`) `ecore` kaydı yazılmaz. Ohm o politikayı hiçbir zaman kaldırmaz.
+- `start`, `ri_proc_start_abstime` değeridir (mach mutlak zamanı; yalnız `boot` ile aynı önyükleme oturumunda anlamlı).
+- **E-core durumu yalnız bu journal'da ve `ECoreLane`'in bellekteki kaydında yaşar.** T-012, `getpriority`'nin BG politikasını yansıtmadığını gösterdi. Bu yüzden `ecore` kaydı, SIGSTOP'taki gibi, `setpriority` çağrısından **önce** yazılır ve `fsync` edilir. Böylece çökmeden sonra hangi süreçlerin geri alınacağı her zaman bilinir. Ohm, başka bir aracın koyduğu BG politikasını ayırt edemez (ADR 0003 § 2).
 
 **Yazma:**
 - Dosya `open(O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600)` ile açılır.
@@ -148,9 +160,15 @@ thaw(g, reason):
 
 **Journal kaybolursa ikinci ağ:** Ohm açılışında, aynı kullanıcıya ait `.regular` uygulamaları `pbi_status == SSTOP` durumu için tarar. Journal'da olmayan donuk bir uygulama bulursa **kendiliğinden çözmez**, çünkü onu başka bir araç (ör. App Tamer) durdurmuş olabilir. Bunun yerine "Donuk görünen uygulamalar var: [Çöz]" bildirimi gösterir.
 
-### 6. Çökme kurtarma: ayrı izleyici LaunchAgent'ı seçildi
+### 6. Çökme kurtarma: ayrı izleyici **ve** sonraki açılışta kurtarma (ikisi birden)
 
-**Karar:** `ohm-thawd` adlı küçük bir izleyici süreç, `SMAppService.agent(plistName: "dev.ohm.thawd.plist")` ile launchd'ye kaydedilir. Plist `Ohm.app/Contents/Library/LaunchAgents/` altındadır ve şu ayarları taşır: `BundleProgram = Contents/MacOS/ohm-thawd`, `KeepAlive = true`, `RunAtLoad = true`. `ProcessType` varsayılan (Standard) bırakılır; `Background` seçilmez, çünkü çözme gecikmesini artırabilir. "Bir sonraki açılışta kurtarma" yalnız üçüncü katman olarak kalır.
+**Karar:** İki mekanizma birlikte kullanılır; ikisi de zorunludur.
+1. **İzleyici:** `ohm-thawd` adlı küçük bir süreç, Ohm'dan bağımsız yaşar ve Ohm hangi yolla ölürse ölsün journal'daki her şeyi çözer. T-013 bu modeli ölçtü: ajan `kill -9` ile öldürüldükten 36–39 ms sonra çözdü.
+2. **Sonraki açılışta kurtarma:** Ohm (ve `ohm thaw --all`) her açılışta aynı `JournalRecovery` kodunu çalıştırır. Bu mekanizma, izleyici de ölmüşse veya hiç çalışmıyorsa devreye girer. T-013'te ikisi birlikte öldürüldüğünde süreç `T` durumunda kaldı ve bu yolla çözüldü.
+
+**İzleyicinin biçimi:** İzleyici `SMAppService.agent(plistName: "dev.ohm.thawd.plist")` ile launchd'ye kaydedilen bir LaunchAgent'tır. Plist `Ohm.app/Contents/Library/LaunchAgents/` altındadır ve şu ayarları taşır: `BundleProgram = Contents/MacOS/ohm-thawd`, `KeepAlive = true`, `RunAtLoad = true`. `ProcessType` varsayılan (Standard) bırakılır; `Background` seçilmez, çünkü çözme gecikmesini artırabilir.
+
+**Bu biçim henüz doğrulanmadı.** T-013 ayrı bir süreç kullandı, `SMAppService` kaydını değil. Kaydın geliştirme imzasıyla (Apple Development) ve Developer ID ile macOS 26/27'de çalıştığı, `KeepAlive` ile izleyicinin yeniden başladığı T-023'ün kabul testidir (§ 10, test 13). Test geçmezse Alternatif B'ye düşülür: izleyiciyi Ohm kendisi `posix_spawn` ile başlatır, izleyici aynı kilit protokolünü kullanır ve sonraki açılışta kurtarma aynen kalır. Bu durumda "ikisi birden öldü" senaryosu yalnız sonraki açılış ve CLI ile karşılanır ve README'de açıkça yazılır.
 
 **Gerekçe:**
 - Faz 2 kapısı "Ohm'u zorla öldürme testinde (`kill -9`) dondurulmuş uygulama kalmaz" diyor. Yalnız sonraki açılışta kurtarma bu kapıyı **geçemez**: kullanıcı Ohm'u yeniden açmazsa uygulamalar donuk kalır ve T1 gerçekleşir.
@@ -179,7 +197,8 @@ Ohm, her freeze öncesi:
 ```
 
 - **`O_CLOEXEC` zorunludur.** Kilit dosyaları `O_CLOEXEC` ile açılır. Ohm'un başlattığı herhangi bir alt süreç (Sparkle yükleyicisi, `open`) kilit tanımlayıcısını miras alırsa, Ohm öldükten sonra kilit bırakılmaz ve izleyici hiç uyanmaz. Ohm `fork()`'u exec'siz kullanmaz.
-- **Sonuç:** `kill -9` sonrasında çözme gecikmesi ≈ çekirdeğin kilidi bırakması + journal okuma + `kill` çağrıları. Hedef <1 sn.
+- **Sonuç:** `kill -9` sonrasında çözme gecikmesi ≈ çekirdeğin kilidi bırakması + journal okuma + `kill` çağrıları. Hedef <1 sn. T-013'te `kqueue NOTE_EXIT` kullanan izleyici 36–39 ms ölçtü. `flock` protokolü de aynı mertebede olmalı; T-023 bunu ölçer.
+- **Neden `NOTE_EXIT` değil `flock`:** Spike'taki izleyici Ohm'un pid'ini `NOTE_EXIT` ile izledi. Üretimde `flock` seçildi, çünkü izleyicinin Ohm'un pid'ini öğrenmesi ve Ohm'dan önce başlaması arasında yarış yok. Pid yeniden kullanımı da sorun değil: kilidi çekirdek, süreç öldüğünde bırakır. Tek Ohm örneği garantisi de aynı kilitten gelir.
 
 **Kayıt ve kullanıcı deneyimi:**
 - İzleyici kurulumda değil, dondurma ilk kez etkinleştirildiğinde kaydedilir. Öncesinde bir açıklama ekranı gösterilir: "Dondurma, Ohm beklenmedik şekilde kapansa bile uygulamalarının donuk kalmaması için küçük bir yardımcı süreç kullanır. Giriş Öğeleri'nde 'Ohm' olarak görünür."
@@ -191,7 +210,7 @@ Ohm, her freeze öncesi:
 
 | Olay | Kaynak | Eylem | Hedef |
 |---|---|---|---|
-| Donuk uygulama aktive edildi (Dock, Cmd-Tab, `open`) | `NSWorkspace.didActivateApplicationNotification` | `thaw(.activation)`; `refreezeGrace` (10 dk gizli kalma) başlar | <300 ms (T-013) |
+| Donuk uygulama aktive edildi (Dock, Cmd-Tab, `open`) | `NSWorkspace.didActivateApplicationNotification` | `thaw(.activation)`; `refreezeGrace` (10 dk gizli kalma) başlar | <300 ms; `open -a` ile ölçülen 17–18 ms (T-013). Dock ve Cmd-Tab: T-023'te elle. |
 | Kural bitti | `Governor.reconcile` | `thaw(.ruleEnded)` | <1 sn |
 | Kullanıcı "Çöz" / "Hepsini çöz" | UI, CLI soketi, App Intent | `thaw(.user)` | Anında |
 | Süre sınırı | `Governor` zamanlayıcısı: `.regular` için `maxFrozenDuration` varsayılan 2 sa, elle dondurulan arka plan süreci için 30 dk | `thaw(.maxDuration)`; kural ancak `refreezeGrace` sonrası yeniden dondurabilir | T8'i sınırlar |
@@ -221,8 +240,9 @@ Ohm, her freeze öncesi:
 
 - `PRIO_DARWIN_BG` sürecin kendi özelliğidir ve Ohm'dan bağımsız yaşar. Ohm ölürse politika uygulama kapanana kadar kalır. Bu veri kaybı değil ama D2'ye aykırı ve görünmez bir yavaşlık yaratır. Bu yüzden E-core da journal'a yazılır (`ecore` ve `ecoreOff`) ve çözmeyle aynı katmanlarla geri alınır: düzenli kapanış, sinyal işleyicisi (yalnız dondurma tablosu; E-core işleyicide geri alınmaz), izleyici ve sonraki açılış.
 - E-core uygulamanın bütün ağacına uygulanır. İşi yapan çoğunlukla helper süreçlerdir (Chrome renderer'ları). Sonradan başlayan helper'lar `ambient` tick'lerinde (10 sn) yakalanır ve politikaya eklenir.
-- **Geri alma:** `setpriority(PRIO_DARWIN_PROCESS, pid, 0)`, yalnız Ohm'un koyduğu ve kimliği doğrulanan pid'lere uygulanır.
-- **Yan etki (man sayfasından):** Politika disk G/Ç'sini kısar, arka plan durumundayken açılan soketlerin ağ G/Ç'sini de kısar. Politika kaldırıldığında bu soketlerin kısıtının kalkıp kalkmadığı bilinmiyor (T-012). Kalkmıyorsa arayüz "E-core'dan çıkarıldı; yeni bağlantılar normal hızda" notunu gösterir.
+- **Geri alma:** `setpriority(PRIO_DARWIN_PROCESS, pid, 0)`, yalnız Ohm'un journal'ına yazılmış ve kimliği doğrulanan pid'lere uygulanır. T-012 bunun hedef dışındaki bir süreçten çalıştığını gösterdi (P payı 0,00'dan 1,00'a döndü).
+- **Durum doğrulaması:** `getpriority` BG durumunu yansıtmadığı için (T-012), politikanın gerçekten uygulandığı `ri_penergy_nj / ri_energy_nj` oranıyla doğrulanır. Yük altında bu oran birkaç tick içinde ~0'a inmelidir. Boştaki bir süreçte oran anlamsızdır; bu durumda doğrulama atlanır ve arayüz yalnız "uygulandı" der.
+- **Yan etki (man sayfasından):** Politika disk G/Ç'sini kısar, arka plan durumundayken açılan soketlerin ağ G/Ç'sini de kısar. Politika kaldırıldığında bu soketlerin kısıtının kalkıp kalkmadığı Faz 0'da ölçülmedi. Açık kalan bir risk olarak arayüz "E-core'dan çıkarıldı; yeni bağlantılar normal hızda" notunu gösterir.
 
 ### 9. Kullanıcıya görünen durum
 
@@ -252,18 +272,23 @@ Ohm, her freeze öncesi:
 10. Donuk kök süreç dışarıdan öldürülür. Helper'ları `T` durumunda kalmaz.
 11. Journal dizini salt okunur yapılır. Dondurma reddedilir ve hiçbir süreç SIGSTOP almaz.
 12. `thawd.lock` tutulmuyorken (izleyici yok) dondurma reddedilir.
+13. **`SMAppService` izleyicisi:** Uygulama Developer ID ile imzalıyken (Faz 4 öncesi geliştirme imzasıyla da) `register()` sonrasında `status == .enabled` olur. `ohm-thawd` `kill -9` ile öldürülünce launchd onu yeniden başlatır ve yeniden başlayan izleyici test 1'i geçer. Başarısızsa § 6'daki Alternatif B uygulanır.
+14. **Elle (otomasyonla yapılamaz):** Donuk uygulama Dock simgesine tıklanarak ve Cmd-Tab ile seçilerek aktive edilir. Her iki yolda da uygulama 300 ms içinde yanıt verir.
+15. Ön plandaki bir uygulamayı elle veya kuralla dondurma girişimi `.frontmost` ile reddedilir ve SIGSTOP gönderilmez (D9).
+16. E-core uygulanmış bir test sürecinde Ohm `kill -9` ile öldürülür. İzleyici politikayı kaldırır; kanıt olarak yük altındaki sürecin `P_share` değeri 1,00'a döner.
 
 Kural (T-013 kartıyla aynı): Testler yalnız testin kendi başlattığı süreçlere sinyal gönderir.
 
 ## Alternatifler
 
-- **A. Yalnız bir sonraki açılışta kurtarma.** Reddedildi. `kill -9` kapısını geçemez. Kullanıcı Ohm'u yeniden açmazsa uygulamalar süresiz donuk kalır. Bu, T1'in doğrudan kendisi.
-- **B. Ohm'un `posix_spawn` ile başlattığı bir alt izleyici (kqueue `NOTE_EXIT` ile ebeveyni izler).** Birincil yol olarak reddedildi. Onu yeniden başlatan kimse yok. `pkill -9 -f Ohm` gibi desenlerle ya da süreç grubu sinyalleriyle Ohm'la birlikte ölebilir. Artısı Giriş Öğeleri'nde görünmemesi. **T-013 `SMAppService.agent` yolunu doğrulayamazsa yedek budur** (§ Spike'a bağlı).
+- **A. Yalnız bir sonraki açılışta kurtarma.** Tek başına reddedildi. `kill -9` kapısını geçemez; kullanıcı Ohm'u yeniden açmazsa uygulamalar süresiz donuk kalır ve bu T1'in kendisidir. İzleyiciyle birlikte ikinci katman olarak kullanılır (§ 6).
+- **A2. Yalnız izleyici (sonraki açılışta kurtarma olmadan).** Reddedildi. T-013, izleyici de ölürse sürecin `T` durumunda kaldığını gösterdi. O senaryoyu yalnız açılışta kurtarma kapatır.
+- **B. Ohm'un `posix_spawn` ile başlattığı bir alt izleyici (kqueue `NOTE_EXIT` ile ebeveyni izler).** Birincil yol olarak reddedildi. Onu yeniden başlatan kimse yok. `pkill -9 -f Ohm` gibi desenlerle ya da süreç grubu sinyalleriyle Ohm'la birlikte ölebilir. Artısı Giriş Öğeleri'nde görünmemesi. **T-023'ün 13 numaralı testi `SMAppService.agent` yolunu doğrulayamazsa yedek budur** (§ 6).
 - **C. Root yetkili helper veya daemon.** Reddedildi. Aynı kullanıcının süreçlerine sinyal göndermek root gerektirmiyor. Daemon onayı daha ağır ve saldırı yüzeyi gereksiz büyür.
 - **D. SIGSTOP yerine `task_suspend`.** Reddedildi. `task_for_pid` entitlement veya root ister. Ayrıca SIGSTOP durumu `ps` ile görünür ve dışarıdan `kill -CONT` ile düzeltilebilir. Bu, acil çıkış yolunun temelidir.
 - **E. Uykudan önce hepsini çözmek.** Reddedildi (§ 7'deki gerekçe).
 - **F. Kaydedilmemiş belge sezgisini zorunlu kılmak (Erişilebilirlik izni).** Reddedildi (§ 2'deki gerekçe). İzin varsa ek veto olarak kullanılır.
-- **G. Dondurmayı hiç sunmamak, yalnız E-core.** Değerlendirildi. Ürün vaadinin bir parçası olduğu için reddedildi. Ancak T-013 kalırsa dondurma elle yapılan ve süre sınırlı bir işleme indirilir; bu, G'ye yakın bir sonuçtur.
+- **G. Dondurmayı hiç sunmamak, yalnız E-core.** Değerlendirildi. Ürün vaadinin bir parçası olduğu için reddedildi. T-013 aktivasyonda çözmeyi doğruladı. T-023'teki Dock ve Cmd-Tab testi (test 14) kalırsa dondurma elle yapılan ve süre sınırlı bir işleme indirilir; bu, G'ye yakın bir sonuçtur.
 - **H. Journal'ı App Group kapsayıcısında tutmak.** Reddedildi. Okuyan sandbox'lı bir bileşen yok. Kritik yolun grup kapsayıcısı TCC davranışına bağımlı olması gereksiz risk.
 
 ## Sonuçlar ve riskler
@@ -271,16 +296,30 @@ Kural (T-013 kartıyla aynı): Testler yalnız testin kendi başlattığı süre
 - **(+)** Ohm'un hangi yolla sonlandığından bağımsız olarak (düzenli kapanış, sinyal, çökme, `SIGKILL`, jetsam) çözme garanti eden bağımsız bir süreç vardır. İzleyici de yoksa dondurma hiç yapılmaz.
 - **(+)** Acil çıkış yolu (`ohm thaw --all`, `kill -CONT`) hiçbir Ohm sürecine bağımlı değildir.
 - **(−)** Giriş Öğeleri'nde görünen ikinci bir süreç ve dondurmayı açmak için tek seferlik bir açıklama ekranı gerekir.
-- **Kalan risk R1 (T3):** Kullanıcı Zorla Çık penceresinde donuk uygulamayı kapatabilir. Bu pencerenin açılışını ucuza algılamanın doğrulanmış bir yolu yok. Azaltma: menü çubuğu göstergesi, onboarding metni, süre sınırı ve isteğe bağlı kaydedilmemiş belge vetosu.
 - **Kalan risk R2 (T8):** Donuk uygulamanın takvim alarmları ve mesajları gecikir. Süre sınırı (2 sa) bunu sınırlar. Kullanıcı takvim uygulamasını "asla dondurma" listesine ekleyebilir. Varsayılan listeye Calendar zaten `com.apple.` kuralıyla giriyor.
 - **Kalan risk R3 (T6):** Güç iddiası tutmadan indirme veya yükleme yapan uygulamalarda aktarım yarıda kalabilir. Bu genellikle kurtarılabilir bir hatadır ama arayüz, dondurma açıklamasında bunu söyler.
-- **Kalan risk R4:** Çok süreçli uygulamalar, çözüldükten sonra saat sıçramasını görüp kendi bekçileriyle helper'ları yeniden başlatabilir (Electron'da sayfanın yeniden yüklenmesi gibi). Çözme sırası (§ 3) bu riski azaltır, sıfırlamaz. T-013'ün Chrome ile genişletilmesi önerilir.
-- **Kalan risk R5:** `SMAppService` ve Background Task Management davranışı macOS sürümleriyle değişebilir. Her büyük macOS sürümünde 1 ve 2 numaralı testler yeniden çalıştırılır.
+- **Kalan risk R4:** Çok süreçli uygulamalar, çözüldükten sonra saat sıçramasını görüp kendi bekçileriyle helper'ları yeniden başlatabilir (Electron'da sayfanın yeniden yüklenmesi gibi). Çözme sırası (§ 3) bu riski azaltır, sıfırlamaz. Faz 0 yalnız tek süreçli TextEdit'i ölçtü. T-023, testin kendi açtığı helper'lı bir uygulamayla (ör. geçici profilli yeni bir Chrome örneği) sırayı ve çözme sonrası sekme sağlığını ölçer.
+- **Kalan risk R5:** `SMAppService` ve Background Task Management davranışı macOS sürümleriyle değişebilir. Her büyük macOS sürümünde 1, 2 ve 13 numaralı testler yeniden çalıştırılır.
 
-## Spike'a bağlı
+### Kabul edilen risk: Zorla Çık (T3)
 
-- **T-013 (aktivasyon):** `didActivateApplicationNotification` donuk uygulama için de geliyor ve Dock veya `open -a` sonrası 300 ms içinde çözüyorsa, kurallar `freeze` kullanabilir. Gelmiyor veya gecikiyorsa: `freeze` kurallardan kaldırılır (ADR 0003). Dondurma yalnız elle, en fazla 30 dk ve popover'dan çözme ile sunulur. Başka aktivasyon sinyalleri (ör. `frontmostApplication` KVO) aynı ölçümle denenir. Dock tıklamasının otomasyonla yapılamadığı ve elle doğrulanacağı not edilir.
-- **T-013 (`kill -9` yolu):** Geliştirme imzasıyla (Apple Development) ve macOS 27'de `SMAppService.agent` kaydı ve `KeepAlive` ile yeniden başlatma çalışıyorsa bu ADR'deki izleyici kullanılır. Çalışmıyorsa Alternatif B (alt izleyici) ve sonraki açılışta kurtarma kullanılır. Bu durumda Giriş Öğeleri ekranı kalkar; test 2'deki "ikisi birden öldü" senaryosu yalnız CLI ve sonraki açılış ile karşılanır ve bu durum README'de açıkça yazılır.
-- **T-013 genişletme önerisi (şefe):** Tek süreçli TextEdit'e ek olarak helper'lı bir uygulamayla (ör. testin kendi açtığı yeni bir Chrome profili) kök-önce/helper-önce sırası ve çözme sonrası sekme sağlığı ölçülmeli. Zorla Çık penceresi açıldığında bir `NSWorkspace` bildirimi gelip gelmediği de gözlenmeli; geliyorsa "Zorla Çık açılınca hepsini çöz" eklenir ve R1 kapanır.
-- **T-011 (ağaç):** Sorumlu pid ile paket yolu kuralı Chrome, Slack (Electron) ve Safari'de beklenen helper kümesini veriyor mu? Vermiyorsa ağaç `ppid` zinciri ve paket yolu ile kurulur.
-- **T-012 (E-core geri alma):** Başka bir süreç (`ohm-thawd`) politikayı `setpriority(…, 0)` ile kaldırabiliyor mu ve kaldırınca `getpriority` 0 dönüyor mu? Kaldıramıyorsa D2, E-core için "uygulama yeniden başlayana kadar" olarak zayıflar ve bu kullanıcıya E-core düğmesinde söylenir.
+**Risk:** Donuk bir uygulama, Zorla Çık penceresinde (Cmd-Option-Esc) "Yanıt Vermiyor" olarak görünür. Kullanıcı durumu uygulamanın kilitlendiği şeklinde yorumlayıp zorla kapatırsa uygulamanın kaydedilmemiş verisi kaybolur. Zorla kapatma `SIGKILL` gönderir; `SIGKILL` donuk süreçlerde de çalışır. Ohm bunu engelleyemez. Zorla Çık penceresinin açıldığını ucuza ve güvenilir biçimde algılamanın doğrulanmış bir yolu da yok.
+
+**Neden kabul edildi:** Riski sıfırlamanın tek yolu dondurmayı hiç sunmamak (Alternatif G). Dondurma ürün vaadinin parçası. Aşağıdaki azaltmalarla, riskin gerçekleşmesi için kullanıcının donuk olduğunu gösteren göstergeyi görmezden gelip zorla kapatmayı seçmesi gerekir.
+
+**Azaltmalar (hepsi zorunlu):**
+1. **Görünürlük (D7):** Menü çubuğunda ❄ ve donuk sayısı; popover'da "Donuk" bölümü ve her zaman görünür "Hepsini çöz" düğmesi.
+2. **Onboarding metni:** Dondurma ilk kez açıldığında şu metin gösterilir: "Donuk uygulamalar Zorla Çık penceresinde 'yanıt vermiyor' görünür. Zorla kapatmak kaydedilmemiş verini siler; önce uygulamaya tıkla, çözülsün."
+3. **Gizleme (D9):** Donuk uygulama ekranda görünmez, bu yüzden bekleme imleci (beachball) çıkmaz. Kullanıcıyı Zorla Çık'a iten en yaygın tetikleyici bu imleçtir.
+4. **Süre sınırı:** `maxFrozenDuration` (2 sa; elle dondurulan arka plan süreçleri için 30 dk) donuk kalma süresini sınırlar.
+5. **Aktivasyonda çözme (D5):** Uygulamaya tıklamak, kullanıcının zaten ilk deneyeceği şeydir ve 17–18 ms içinde çözer.
+6. **İsteğe bağlı kaydedilmemiş belge vetosu:** Kullanıcı Erişilebilirlik iznini zaten vermişse ve T-023 `AXEdited` sezgisini doğrularsa, düzenlenmiş belgesi olan uygulamalar hiç dondurulmaz (§ 2).
+7. **Gözlem:** T-023 sırasında Zorla Çık penceresi açılınca bir `NSWorkspace` bildirimi gelip gelmediğine bakılır. Güvenilir bir sinyal bulunursa "Zorla Çık açılınca hepsini çöz" eklenir ve bu risk yeniden değerlendirilir.
+
+## Spike'a bağlı (Faz 0 sonuçlarıyla çözüldü)
+
+- **T-013 PASS (aktivasyon):** Donuk uygulama için de `didActivateApplicationNotification` geliyor; SIGCONT gecikmesi 17–18 ms. **Karar:** Kurallar `freeze` kullanabilir (ADR 0003). Öndeki uygulamanın yeniden aktivasyonu bildirim üretmediği için D9 eklendi: yalnız ön planda olmayan ve SIGSTOP'tan önce gizlenmiş uygulamalar dondurulur.
+- **T-013 PASS (kurtarma):** Ayrı izleyici `kill -9` sonrasında 36–39 ms içinde çözdü. İkisi birlikte ölünce sonraki açılışta journal'dan kurtarma çözdü. **Karar:** İzleyici ve sonraki açılışta kurtarma birlikte kullanılır (§ 6).
+- **T-012 PASS:** `setpriority(…, 0)` politikayı başka bir süreçten kaldırıyor, bu yüzden D2 E-core için de tam geçerli. `getpriority` durumu yansıtmıyor. **Karar:** `ECoreLane` kendi kaydını tutar; E-core durumu `setpriority`'den önce journal'a yazılır ve izleyici ile sonraki açılış bunu geri alır (§ 5, § 8, test 16).
+- **Açık kalan tek yedekli karar (T-023 test 13):** İzleyicinin `SMAppService` LaunchAgent'ı biçimi doğrulanmadı. Başarısız olursa Alternatif B (Ohm'un `posix_spawn` ile başlattığı izleyici) ve sonraki açılışta kurtarma kullanılır.
+- **Açık kalan doğrulamalar (T-023):** Dock ve Cmd-Tab ile çözme (test 14, elle). Helper'lı uygulamada sıra ve sekme sağlığı (R4). Süreç ağacının sorumlu pid ve paket yolu kuralıyla doğru kurulması (Chrome, Slack, Safari); kurulmazsa `ppid` zinciri ile paket yolu birlikte kullanılır. Test 14 başarısız olursa `freeze` kurallardan kaldırılır ve dondurma yalnız elle yapılan, en fazla 30 dk süren bir işleme iner.

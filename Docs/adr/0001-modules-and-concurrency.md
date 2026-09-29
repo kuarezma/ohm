@@ -1,6 +1,6 @@
 # ADR 0001: Modül sınırları ve eşzamanlılık modeli
 
-- **Durum:** Önerildi (T-001). Şef review'u ve T-001b ikinci görüşü bekleniyor.
+- **Durum:** Önerildi (T-001). Şef review'u ve T-001b ikinci görüşü bekleniyor. Faz 0 spike sonuçları işlendi (`spikes/README.md`, `main` 5773b60).
 - **Tarih:** 2026-09-29
 - **İlgili:** ADR 0002 (ledger), ADR 0003 (kural DSL'i), ADR 0004 (dondurma güvenliği), `Docs/PLAN.md` § Mimari
 
@@ -10,10 +10,10 @@ Ohm; menü çubuğu uygulaması, widget, `ohm` CLI ve dondurma güvenliği için
 
 - **Hafiflik (kabul ölçütü):** Boştayken bellek <40 MB ve CPU ortalaması <%0,5. Popover açıkken örnekleme 1 sn, kapalıyken 10 sn. Ohm'un kendi işi `.utility` veya `.background` QoS ile yapılır.
 - **Swift 6 strict concurrency** (araç zinciri Swift 6.4). Veri yarışı derleme hatasıdır.
-- **Özel API riski:** IOReport'un başlığı yok ve macOS 27'de değişmiş olabilir (T-010). Bu yüzden özel API'ye bağlı kod tek bir modülde ve bir protokolün arkasında durmalı; yedek yol protokolün başka bir uygulaması olmalı.
+- **Özel API riski gerçekleşti (T-010 PARTIAL).** macOS 27'de IOReport "Energy Model" grubundaki CPU, DRAM ve ANE sayaçları saniyelik güncellenmiyor; yalnız seyrek "patlamalar" halinde yayımlanıyor. Saniyelik canlı olanlar iki kanal: `GPU Energy` (nJ) ve "CPU Stats" küme doluluğu (residency). Sistem gücü `AppleSmartBattery` → `PowerTelemetryData.SystemLoad` (mW) ile hem pilde hem adaptörde okunabiliyor, ama ~20 sn'de bir güncelleniyor. `Voltage × Amperage` yalnız deşarjda sistem gücüdür. Özel API'ye bağlı kod tek bir modülde ve protokollerin arkasında durmalı.
 - **Sandbox sınırı:** WidgetKit uzantısı sandbox'lı çalışmak zorunda. Ana uygulama başka süreçlere sinyal gönderdiği için sandbox'sız, Developer ID ile imzalı. Widget özel API'lere ve sinyal koduna bağlanmamalı.
 - **Tek yazar:** SQLite ledger'ına ve dondurma journal'ına yalnız bir süreç yazmalı. Aksi halde kilit çekişmesi ve bozulma riski doğar.
-- **Dağıtım hedefi:** Plan "M1+, macOS 15+" diyor. FoundationModels ve Liquid Glass ise macOS 26 istiyor. Bu ADR'nin varsayımı şu: dağıtım hedefi macOS 15, macOS 26 özellikleri `#available(macOS 26, *)` ile açılır.
+- **Dağıtım hedefi (kullanıcı kararı, 2026-09-29):** En düşük sürüm **macOS 26**, yalnız Apple Silicon. `Package.swift` içinde `platforms: [.macOS(.v26)]`, `project.yml` içinde `MACOSX_DEPLOYMENT_TARGET = 26.0`. Planın "macOS 15+" satırı bu kararla değişti (site ve README buna göre güncellenmeli).
 
 ## Karar
 
@@ -24,12 +24,12 @@ Ohm; menü çubuğu uygulaması, widget, `ohm` CLI ve dondurma güvenliği için
 | Target | Tür | İçerik | Bağımlılıklar |
 |---|---|---|---|
 | `OhmModel` | Swift | Yalnız değer tipleri: kimlikler, örnekler, fiş satırları, `Rule` modeli, komutlar. Hepsi `Sendable`, çoğu `Codable`. | – |
-| `COhmSys` | C | IOReport prototipleri (`dlopen`/`dlsym`), `responsibility_get_pid_responsible_for_pid` (`dlsym`, libquarantine), async-signal-safe çözme tablosu (ADR 0004). | – |
-| `OhmSampling` | Swift | `IOReportSampler`, `ProcessEnergySampler`, `BatterySampler`, `ThermalSampler`, `AttributionResolver`, `SamplingEngine` | `OhmModel`, `COhmSys` |
+| `COhmSys` | C | IOReport prototipleri; `responsibility_get_pid_responsible_for_pid` (`dlsym`, libquarantine); async-signal-safe çözme tablosu (ADR 0004). IOReport, `dlopen("/usr/lib/libIOReport.dylib")` ve `dlsym` ile yüklenir. Kütüphane dosya olarak yok, dyld paylaşımlı önbelleğinde; spike, SDK'daki `libIOReport.tbd` ile `-lIOReport` bağlamanın çalıştığını gösterdi. Yine de gelecekteki bir macOS'ta sembol kalkarsa uygulama açılışta çökmesin, yalnız IOReport özellikleri kapansın diye sert bağlama yapılmaz. `dlopen`'ın paylaşımlı önbellekteki yolu çözdüğü T-021'de doğrulanır; çözmezse zayıf bağlama (`-weak-lIOReport`) kullanılır. | – |
+| `OhmSampling` | Swift | `ProcessEnergySampler` (`ri_energy_nj`), `SystemLoadSampler` (`PowerTelemetryData.SystemLoad`, deşarjda `V × I` yedeği), `IOReportSampler` (canlı `GPU Energy` ve küme doluluğu; CPU, DRAM ve ANE için patlama yakalayıcı), `BatterySampler`, `ThermalSampler`, `AttributionResolver`, `SamplingEngine` | `OhmModel`, `COhmSys` |
 | `OhmLedger` | Swift | `EnergyLedger` (yazar), `LedgerReader` (salt okunur), migration'lar | `OhmModel` (sistem `sqlite3`) |
 | `OhmJournal` | Swift | `FreezeJournal`, `JournalRecovery`, `ProcessIdentity` doğrulama | `OhmModel`, `COhmSys` |
 | `OhmGovernor` | Swift | `Governor`, `ECoreLane`, `Freezer`, `SafetyPolicy`, `RunawayDetector` | `OhmModel`, `OhmJournal`, `COhmSys` |
-| `OhmRules` | Swift | `RuleEngine`, `RuleCompiler`, `NLRuleParser` (`#if canImport(FoundationModels)`) | `OhmModel` |
+| `OhmRules` | Swift | `RuleEngine`, `RuleCompiler`, `NLRuleParser` (FoundationModels; derleme zamanı koşulu yok) | `OhmModel` |
 | `OhmForecast` | Swift | `BatteryForecaster` | `OhmModel` |
 | `OhmControl` | Swift | CLI ile uygulama arasındaki kontrol soketinin mesajları ve istemcisi | `OhmModel` |
 
@@ -46,6 +46,7 @@ Kurallar:
 - Target'lar arasında döngü yok. `OhmRules`, `OhmGovernor`'ı import etmez: kural motoru "istenen durumu" (`DesiredState`) üretir, `Governor` uygular. `OhmGovernor` de `OhmSampling`'i import etmez; `RunawayDetector` örnekleri `OhmModel` tipleriyle alır.
 - Özel API (IOReport, responsibility SPI) yalnız `COhmSys` ve `OhmSampling` içinde bulunur. Widget'ın ikili dosyasında bu semboller yer almaz.
 - Yeni bir üçüncü taraf bağımlılık eklenmez (plan: yalnız Sparkle ve swift-argument-parser).
+- **Tek kod yolu:** Hedef macOS 26 olduğu için FoundationModels, Liquid Glass ve App Intents için `#available` veya `#if canImport` dalı yazılmaz. Tek çalışma zamanı kontrolü Apple Intelligence içindir: `SystemLanguageModel.default.availability` ve `supportsLocale(_:)`. Apple Intelligence kullanıcı tarafından kapatılmış olabilir, cihazda hazır olmayabilir veya kullanıcının dilini desteklemeyebilir; bu durumlarda yalnız doğal dilde kural girişi gizlenir (ADR 0003).
 
 ### 2. Modüller arası protokoller
 
@@ -53,10 +54,10 @@ Protokoller `OhmModel` içinde tanımlanır; somut tipler kendi target'larında 
 
 ```swift
 // MARK: OhmModel — değer tipleri (özet)
-public struct ProcessStartTime: Hashable, Sendable, Codable { public var sec: Int64; public var usec: Int32 }
 public struct ProcessIdentity: Hashable, Sendable, Codable {        // pid yeniden kullanımına karşı
     public var pid: Int32
-    public var start: ProcessStartTime                               // proc_pidinfo(PROC_PIDTBSDINFO)
+    public var startAbs: UInt64                                      // ri_proc_start_abstime (mach abs); önyükleme
+                                                                     // oturumu (kern.bootsessionuuid) ile birlikte geçerli
 }
 public enum AttributionKind: Int, Sendable, Codable { case bundleID = 0, executableName = 1, processName = 2 }
 public struct AppKey: Hashable, Sendable, Codable {                  // ADR 0002'deki kalıcı atıf anahtarı
@@ -67,14 +68,21 @@ public enum PowerSourceKind: String, Sendable, Codable { case battery, ac, unkno
 public enum ThermalLevel: Int, Sendable, Codable, Comparable { case nominal, fair, serious, critical }
 
 public struct SystemPower: Sendable {                                // bir aralığın ortalaması, watt
-    public var cpuP: Double?, cpuE: Double?, gpu: Double?, ane: Double?, dram: Double?  // IOReport; yoksa nil
-    public var batteryTerminal: Double?                               // V × I, yalnız pildeyken anlamlı
-    public var clusterActive: ClusterResidency?
+    public var cpuP: Double, cpuE: Double          // Σ okunabilen süreçlerin Δri_penergy_nj ve Δ(ri_energy_nj − ri_penergy_nj)
+    public var gpu: Double?                        // IOReport "GPU Energy" (nJ, canlı); yoksa nil
+    public var systemLoad: Double?                 // PowerTelemetryData.SystemLoad (~20 sn tazelik); yoksa deşarjda V × I
+    public var systemLoadAge: Duration?            // son SystemLoad güncellemesinden beri geçen süre
+    public var clusterActive: ClusterResidency?    // IOReport "CPU Stats" P/E doluluğu (canlı)
+}
+public struct EnergyBurst: Sendable {             // IOReport "Energy Model" patlaması: seyrek, uzun pencere
+    public var window: DateInterval               // önceki patlamadan bu patlamaya
+    public var cpu_mJ: Double?, dram_mJ: Double?, ane_mJ: Double?
 }
 public struct BatteryState: Sendable, Codable {
     public var source: PowerSourceKind
     public var percent: Int
     public var voltage_mV: Int, amperage_mA: Int
+    public var systemLoad_mW: Int?                // PowerTelemetryData.SystemLoad; pilde ve adaptörde geçerli
     public var rawCurrentCapacity_mAh: Int?, fullChargeCapacity_mAh: Int?
     public var isCharging: Bool
 }
@@ -87,6 +95,7 @@ public struct SampleTick: Sendable {
     public var wallClock: Date
     public var interval: Duration                                     // bir önceki tick'ten beri, monotonik
     public var system: SystemPower
+    public var burst: EnergyBurst?                                    // bu tick'te bir IOReport patlaması geldiyse
     public var battery: BatteryState
     public var thermal: ThermalLevel
     public var processes: [ProcessDelta]
@@ -100,8 +109,11 @@ public enum SamplingCadence: Sendable, Equatable {
 }
 
 // MARK: Örnekleme
-public protocol SystemPowerSampling: Sendable {                      // IOReportSampler | BatteryOnlyPowerSampler
-    func sample() async throws -> SystemPower
+public protocol SystemLoadSampling: Sendable {                       // SystemLoadSampler; yedek: deşarjda V × I
+    func read() async -> (watts: Double?, age: Duration?)
+}
+public protocol ComponentSampling: Sendable {                        // IOReportSampler; yoksa NullComponentSampler
+    func sample() async -> (gpuWatts: Double?, residency: ClusterResidency?, burst: EnergyBurst?)
 }
 public protocol ProcessEnergySampling: Sendable {
     func sample() async -> (deltas: [ProcessDelta], unreadable: UnreadableSummary)
@@ -183,8 +195,20 @@ Kompozisyon kökü `OhmApp` içinde bir `actor OhmRuntime`'dır. `ticks` akış�
 
 - **Durum makinesi:** Popover içeriğinin `onAppear` olayı `interactive` (1 sn), `onDisappear` olayı `ambient` (10 sn) durumuna geçirir. `NSWorkspace.screensDidSleepNotification` ve `willSleepNotification` `suspended` durumuna, `screensDidWake` ve `didWake` önceki duruma döndürür.
 - **Zamanlayıcı:** `ContinuousClock` ile `sleep(for: interval, tolerance: interval / 10)`. Toleransın amacı çekirdeğin uyanmaları birleştirebilmesi (timer coalescing). Periyodik bir `Timer` kullanılmaz.
+- **Kaynaklar ve tazelikleri (Faz 0'da ölçüldü, M3 ve macOS 27):**
+
+| Gösterilen değer | Kaynak | Tazelik | Not |
+|---|---|---|---|
+| Canlı CPU watt'ı, P ve E ayrı | Okunabilen süreçlerin `Δri_penergy_nj` ve `Δ(ri_energy_nj − ri_penergy_nj)` toplamı | Her tick | Root ve başka kullanıcıların süreçleri dahil değil (~668 pid'in ~268'i `EPERM`). Arayüz bu değeri "uygulamaların CPU gücü" diye adlandırır, "CPU gücü" demez. |
+| Canlı GPU watt'ı | IOReport "Energy Model" → `GPU Energy` (nJ) | Her tick | macOS 27'de saniyelik güncellenen tek enerji kanalı |
+| P/E küme doluluğu | IOReport "CPU Stats" / "CPU Core Performance States" durum yerleşimi | Her tick | `IDLE`, `OFF` ve `DOWN` dışındaki durumlar aktif sayılır |
+| Sistem toplamı (menü çubuğu halkası) | `AppleSmartBattery` → `PowerTelemetryData.SystemLoad` (mW) | ~20 sn | Pilde ve adaptörde geçerli. Yoksa yalnız deşarjda `V × I` kullanılır. Arayüz değerin yaşını 20 sn'den eskiyse gösterir. |
+| CPU, DRAM ve ANE bileşen enerjisi | IOReport "Energy Model" patlamaları | Seyrek (sn'ler ile dk'lar arası; bazı koşularda hiç gelmedi) | **Canlı watt olarak hiç gösterilmez.** Yalnız bir patlama iki uç arasındaki pencereyi kapsadığında uzun pencere ortalaması olarak kullanılır (ADR 0002). |
+
+- `SamplingEngine` her tick'te süreç taramasını, `GPU Energy`'yi ve küme doluluğunu okur. `SystemLoad` ve pil alanları, kaynak zaten ~20 sn'de bir güncellendiği için 10 sn'de bir okunur. IOReport aboneliği hem `interactive` hem `ambient` durumda açık kalır, böylece bir patlama kaçırılmaz.
 - **Sayaçlar kümülatif olduğu için** (IOReport enerji sayaçları, `ri_energy_nj`) aralığın uzaması ölçülen enerjiyi değiştirmez. Değişen iki şey var: zaman çözünürlüğü ve iki örnek arasında doğup ölen süreçlerin kaybı (ADR 0002 § Dürüst sınırlar). `suspended` durumdan çıkıldığında ilk delta normal şekilde hesaplanır. Aradaki boşluk bir `sampling_gap` satırı olarak ledger'a yazılır.
-- **Popover açıkken bile süreç taraması 1 sn'de yapılır.** Ölçülecek yük ~500 süreç için `proc_listallpids` artı `proc_pid_rusage` çağrısı. T-021 bunu ölçer. Tarama tick başına 5 ms CPU'yu aşarsa, `interactive` durumda süreç taraması 2 sn'ye çekilir, sistem gücü 1 sn'de kalır.
+- **Popover açıkken bile süreç taraması 1 sn'de yapılır**, çünkü canlı CPU watt'ının tek kaynağı bu tarama. Yük ~670 pid için `proc_listallpids` artı `proc_pid_rusage` çağrısı. `EPERM` dönen pid'ler bir sonraki atıf önbelleği yenilemesine kadar yeniden denenmez. Tarama maliyeti T-021'de ölçülür. Tick başına 5 ms CPU'yu aşarsa kabul kapısı kırmızı sayılır ve optimizasyon (ör. yalnız değişen pid kümesini yeniden çözmek) T-021'in işi olur. Canlı değer 2 sn'ye düşürülmez.
+- CPU zamanı alanları (`ri_user_time`, `ri_system_time`) mach tick cinsindendir ve `mach_timebase_info` ile ns'ye çevrilir. M3'te oran 125/3; sabit kodlanmaz.
 - **Atıf önbelleği:** pid'den `AppKey`'e çözüm (ADR 0002) `ProcessIdentity` anahtarıyla önbelleğe alınır. Böylece `proc_pidpath` ve `Info.plist` okuması her süreç için yalnız bir kez yapılır. Ölen süreçlerin girdileri her tick'te silinir.
 
 ### 5. Widget ve CLI veriyi nasıl okur
@@ -222,16 +246,17 @@ CPU: `ambient` durumda tick başına hedef ≤3 ms (10 sn'de bir; ≈%0,03). Led
 
 ## Sonuçlar ve riskler
 
-- **(+)** Özel API tek bir target'ta kalır; yedek yol protokolün ikinci uygulamasıdır (`BatteryOnlyPowerSampler`). Widget ile özel API arasında bağlantı yoktur.
+- **(+)** Özel API tek bir target'ta kalır. IOReport tamamen kaybolursa `NullComponentSampler` devreye girer. Bu durumda yalnız GPU watt'ı ve küme doluluğu gider; pil fişi ve sistem toplamı IOReport'a bağlı değildir. Widget ile özel API arasında bağlantı yoktur.
+- **(−)** Canlı CPU watt'ı yalnız okunabilen süreçleri kapsar ve gerçek CPU gücünden düşüktür. Aradaki fark (root süreçler) canlı olarak ölçülemez; yalnız IOReport patlamaları geldiğinde uzun pencerede tahmin edilir (ADR 0002).
 - **(+)** Her mantık parçası sahte (fake) protokol uygulamalarıyla birim test edilebilir. T-022 ve T-031 donanım olmadan test yazabilir.
 - **(−)** Dokuz target ve dört ikili dosya iskeleti (T-020) büyütür. XcodeGen şablonu bunu bir kez çözer.
-- **Risk:** Sandbox'sız bir CLI'ın App Group kapsayıcısına erişmesi macOS 15 ve sonrasında TCC uyarısına ("başka uygulamaların verilerine erişmek istiyor") yol açabilir. Etkisi CLI'da tek seferlik bir izin istemi olur. T-033 bunu doğrular. Uyarı çıkarsa CLI okumaları kontrol soketine taşınır; bu durumda uygulamanın açık olması gerekir. Ledger'ın ikinci bir kopyası tutulmaz.
-- **Risk:** `DispatchSerialQueue` yürütücüsü macOS 14+ gerektirir. Dağıtım hedefi 15 olduğu için sorun değil.
+- **Risk:** Sandbox'sız bir CLI'ın App Group kapsayıcısına erişmesi macOS 15'ten beri TCC uyarısına ("başka uygulamaların verilerine erişmek istiyor") yol açabilir. Etkisi CLI'da tek seferlik bir izin istemi olur. T-033 bunu doğrular. Uyarı çıkarsa CLI okumaları kontrol soketine taşınır; bu durumda uygulamanın açık olması gerekir. Ledger'ın ikinci bir kopyası tutulmaz.
+- **Risk:** `PowerTelemetryData.SystemLoad` yalnız M3 ve macOS 27'de ölçüldü. M1 ve M2'de macOS 26 ile bulunup bulunmadığı bilinmiyor. Yoksa `SystemLoadSampler` deşarjda `V × I` yedeğine düşer ve şarjdayken "Diğer" satırı hesaplanamaz (ADR 0002). T-021 alanın varlığını çalışma zamanında kontrol eder; eski çip testi için bir M1 veya M2 cihaz gerekir.
 - **Risk:** `MenuBarExtra(.window)` görünüm ağacı kapalıyken tamamen serbest bırakılmayabilir. T-061'de 40 MB aşılırsa popover, `NSStatusItem` ve `NSPopover` ile elle yönetilen bir yapıya geçirilir.
 
-## Spike'a bağlı
+## Spike'a bağlı (Faz 0 sonuçlarıyla çözüldü)
 
-- **T-010 (IOReport sudo'suz):** Geçerse `SystemPowerSampling` = `IOReportSampler` (P/E küme, GPU, ANE, DRAM watt'ı, küme doluluğu). Geçmezse `BatteryOnlyPowerSampler`: sistem gücü yalnız pildeyken `V × I` olarak okunur. Popover'daki küme çubukları gizlenir, "Diğer" satırı yalnız pildeyken hesaplanır (ADR 0002).
-- **T-011 (`ri_energy_nj`):** Geçerse `ProcessEnergySampler` enerji sayacını doğrudan kullanır. Geçmezse (sıfır veya okunamaz) süreç enerjisi, IOReport küme enerjisinin CPU zamanı payına göre dağıtılmasıyla tahmin edilir (`ri_user_time + ri_system_time`). Arayüzde "tahmini" etiketi gösterilir. T-010 da kalırsa pil fişi yalnız CPU zamanı olarak gösterilir. Bu, ürün vaadinin daraltılması demektir ve kullanıcı kararı gerektirir.
-- **T-011 (tick maliyeti):** Tam taramanın ölçülen maliyeti, `interactive` durumda süreç taramasının 1 sn mi 2 sn mi olacağını belirler (§ 4).
-- **T-013 (aktivasyon gecikmesi):** `Governor` yürütücüsünün `.userInitiated` QoS'u, ölçülen gecikme 300 ms'yi aşarsa yeniden değerlendirilir.
+- **T-010 PARTIAL (kesin):** IOReport canlı bileşen watt'ı için kullanılmaz. Kesin örnekleme tasarımı § 4'teki tablodur: süreç enerjisi, `GPU Energy`, küme doluluğu ve `SystemLoad`. CPU, DRAM ve ANE bileşen enerjisi yalnız patlamalardan uzun pencere ortalaması olarak kullanılır. Popover'da bileşen başına CPU, DRAM veya ANE watt'ı gösterilmez.
+- **T-011 PASS:** `ProcessEnergySampler`, `ri_energy_nj` ve `ri_penergy_nj` sayaçlarını doğrudan kullanır. CPU zamanından tahmin yedeği kaldırıldı. `EPERM` oranı (~%40 pid) ADR 0002'de "Sistem" satırı olarak ele alınır.
+- **T-013 PASS:** Aktivasyon ile SIGCONT arası 17–18 ms. `Governor` için `.userInitiated` QoS'u yeterli, değişiklik yok.
+- **Açık kalan (spike dışı):** `dlopen` ile IOReport'un paylaşımlı önbellekten yüklenmesi (T-021). `SystemLoad` alanının M1 ve M2'de bulunması (bulunmazsa deşarjda `V × I` yedeği; § Sonuçlar ve riskler).

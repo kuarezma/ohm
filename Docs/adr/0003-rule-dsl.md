@@ -1,6 +1,6 @@
 # ADR 0003: Kural DSL'i, değerlendirme semantiği ve doğal dil şeması
 
-- **Durum:** Önerildi (T-001). Şef review'u ve T-001b ikinci görüşü bekleniyor.
+- **Durum:** Önerildi (T-001). Şef review'u ve T-001b ikinci görüşü bekleniyor. Faz 0 spike sonuçları işlendi (`spikes/README.md`, `main` 5773b60).
 - **Tarih:** 2026-09-29
 - **İlgili:** ADR 0001 (`RuleEvaluating`, `DesiredState`), ADR 0004 (güvenlik vetoları, aktivasyonda çözme), T-031 (RuleEngine), T-040 (NLRuleParser)
 
@@ -148,7 +148,7 @@ Olaylar 250 ms içinde birleştirilir (coalescing). Motor her değerlendirmede `
 - `eCore` ve `freeze` **düzey tetiklemelidir** (level-triggered). Kural `active` olduğu sürece katkısı "istenen durum"da (`DesiredState`) yer alır. `inactive` olunca, devre dışı bırakılınca veya silinince katkı kalkar. Geri alma bu katkı farkından kendiliğinden doğar; ayrı bir "geri al" eylemi yoktur.
 - `notify` **kenar tetiklemelidir** (edge-triggered). Yalnız `inactive → active` geçişinde, `notifyCooldown` süresi dolmuşsa ateşlenir. Aynı değerlendirmede ateşlenen bildirimler tek bir bildirimde birleştirilir.
 
-**Uzlaştırma (reconciliation):** `RuleEngine`, her aktif kuralın hedeflerini `AppKey`'e çözer ve `DesiredState` üretir. Bu durum her uygulama için istenen etkiler kümesini ve bunların kaynaklarını içerir. `Governor.reconcile` gerçek durumu istenen duruma getirir. Governor yalnız **kendi uyguladığı** etkiyi geri alır: Ohm'dan önce zaten arka plan önceliğinde olan bir süreç (`getpriority` 1 döndürüyorsa) Ohm tarafından hiçbir zaman ön plana döndürülmez. Hedef uygulama o anda çalışmıyorsa istek beklemede kalır ve uygulama açılınca uygulanır.
+**Uzlaştırma (reconciliation):** `RuleEngine`, her aktif kuralın hedeflerini `AppKey`'e çözer ve `DesiredState` üretir. Bu durum her uygulama için istenen etkiler kümesini ve bunların kaynaklarını içerir. `Governor.reconcile` gerçek durumu istenen duruma getirir. Governor yalnız **kendi uyguladığı** etkiyi geri alır; bunun için kendi kaydını tutar. T-012, `getpriority(PRIO_DARWIN_PROCESS, pid)` çağrısının BG politikası uygulanmışken de 0 döndürdüğünü gösterdi. Bu yüzden politika durumu sistemden okunamaz, `ECoreLane`'in kaydı (ve journal, ADR 0004) tek doğruluk kaynağıdır. Buradan çıkan bilinen sınır: Başka bir araç (ör. `taskpolicy -b`, App Tamer) aynı sürece BG politikası koyduysa Ohm bunu ayırt edemez. Ohm kendi E-core'unu kaldırırken `0` yazar ve o aracın politikasını da kaldırmış olur. Arayüz bu durumu E-core açıklamasında belirtir. Hedef uygulama o anda çalışmıyorsa istek beklemede kalır ve uygulama açılınca uygulanır.
 
 ### 3. Çatışma çözümü
 
@@ -167,10 +167,8 @@ Bir uygulama için sıralama `none < eCore < freeze` şeklindedir.
 Model özyinelemeli `Condition` ağacını **üretmez**. Düz bir `GeneratedRule` üretir. Deterministik `RuleCompiler` bu çıktıyı `Rule`'a çevirir, doğrular ve uygulama adlarını bundle ID'ye çözer. Bu tercihin gerekçesi: düz şema küçük model için daha kolay, doğrulama kodu modelden bağımsız ve test edilebilir.
 
 ```swift
-#if canImport(FoundationModels)
-import FoundationModels
+import FoundationModels   // hedef macOS 26: derleme zamanı koşulu ve #available yok
 
-@available(macOS 26, *)
 @Generable(description: "Kullanıcının tek cümlesinden çıkarılan bir enerji kuralı")
 struct GeneratedRule {
     @Guide(description: "Kısa, kullanıcının dilinde kural adı")
@@ -189,16 +187,15 @@ struct GeneratedRule {
     var conditions: [GeneratedCondition]
 }
 
-@available(macOS 26, *) @Generable enum GeneratedAction { case eCore, freeze, notify }
-@available(macOS 26, *) @Generable enum GeneratedMatch { case all, any }
-@available(macOS 26, *) @Generable enum GeneratedThermal { case fair, serious, critical }
-@available(macOS 26, *) @Generable enum GeneratedWeekday { case mon, tue, wed, thu, fri, sat, sun }
-@available(macOS 26, *) @Generable enum GeneratedConditionKind {
+@Generable enum GeneratedAction { case eCore, freeze, notify }
+@Generable enum GeneratedMatch { case all, any }
+@Generable enum GeneratedThermal { case fair, serious, critical }
+@Generable enum GeneratedWeekday { case mon, tue, wed, thu, fri, sat, sun }
+@Generable enum GeneratedConditionKind {
     case onBattery, onAC, batteryBelow, batteryAtOrAbove, thermalAtLeast,
          frontmostIs, frontmostIsNot, timeBetween, focusOn, focusOff, focusProfile
 }
 
-@available(macOS 26, *)
 @Generable(description: "Tek bir koşul; yalnız kind'a uyan alanlar doldurulur, diğerleri boş kalır")
 struct GeneratedCondition {
     var kind: GeneratedConditionKind
@@ -217,7 +214,6 @@ struct GeneratedCondition {
     @Guide(description: "Focus profil adı; yalnız focusProfile için")
     var focusProfile: String?
 }
-#endif
 ```
 
 `@Guide` kısıtları (`.range`, regex) optional alanlarda derleyici tarafından desteklenmiyorsa, kısıt açıklama metnine taşınır. Asıl doğrulama her durumda `RuleCompiler`'dadır. T-040 bunu derleyerek doğrular.
@@ -365,8 +361,10 @@ Semantik: Pencere gece yarısını geçer. Cuma 22:00'de başlayan pencere cumar
 - **Risk:** `INFocusStatusCenter` yetkilendirmesi ek bir entitlement veya capability isteyebilir. T-031 bunu doğrular. Gerekirse `focus` yaprağı kaldırılır ve yalnız `focusProfile` kalır.
 - **Risk:** Uygulama adı çözümü yanlış eşleşme üretebilir. Belirsizlikte her zaman kullanıcıya sorulur ve onay ekranı bundle ID'yi gösterir.
 
-## Spike'a bağlı
+## Spike'a bağlı (Faz 0 sonuçlarıyla çözüldü)
 
-- **T-012 (`PRIO_DARWIN_BG`):** Geçerse `eCore` eylemi bu adla kalır. Geçmezse (P-küme payı ölçülebilir biçimde düşmüyorsa) eylem modelde aynı kalır ama arayüzde ve NL açıklamalarında "arka plan önceliği" adıyla sunulur. `PRIO_DARWIN_BG` disk ve ağ G/Ç'sini de kıstığı için (man sayfası: "disk IO is throttled … network IO is throttled for any sockets opened after going into background state") bu yan etki her iki durumda da arayüzde belirtilir.
-- **T-012:** Politikanın başka bir süreç tarafından `setpriority(…, 0)` ile kaldırılabildiği doğrulanmalı. Kaldırılamıyorsa `whileFrontmost: .release` desteklenmez ve düz `eCore` "uygulama yeniden başlayana kadar" semantiğine iner.
-- **T-013:** Aktivasyonda çözme 300 ms kapısını geçmezse `freeze` eylemi kurallardan kaldırılır. `RuleValidator` `freeze`'i reddeder, `GeneratedAction.freeze` onay ekranında devre dışı gösterilir ve dondurma yalnız elle, süre sınırlı bir işlem olarak kalır (ADR 0004).
+- **T-012 PASS:** `eCore` eylemi bu adla kalır. 4 `yes` yükünde P payı 1,00'dan 0,00'a indi ve güç 13,3 W'tan 1,4 W'a düştü. Aynı yükte CPU zamanı %399'dan %266'ya indi; E çekirdekleri daha yavaş olduğu için iş daha geç biter. Arayüz ve NL açıklamaları eylemi "daha az güç, daha yavaş" diye anlatır. `PRIO_DARWIN_BG` disk G/Ç'sini ve arka plan durumundayken açılan soketlerin ağ G/Ç'sini de kısar (man sayfası); bu yan etki de açıklamada yer alır.
+- **T-012 PASS (geri alma):** Politikayı, hedefi olmayan başka bir süreç `setpriority(…, 0)` ile kaldırabiliyor. Spike'ta script, kendi başlattığı `yes` süreçlerinde bunu yaptı ve P payı 1,00'a döndü. Bu yüzden `whileFrontmost: .release` ve düzey tetiklemeli geri alma olduğu gibi kalır.
+- **T-012 (durum okunamıyor):** `getpriority` BG durumunu yansıtmıyor. Tek doğruluk kaynağı `ECoreLane` kaydı ve journal'dır (§ 2 "Uzlaştırma", ADR 0004 § 8).
+- **T-013 PASS:** Aktivasyon ile SIGCONT arası 17–18 ms. `freeze` eylemi kurallarda kullanılabilir. Tek koşul ADR 0004'teki değişmezdir: yalnız öne gelmemiş ve dondurmadan önce gizlenmiş uygulamalar dondurulur. Öndeki bir uygulamanın yeniden aktive edilmesi bildirim üretmediği için ön plandaki uygulama hiçbir kuralla dondurulamaz.
+- **Açık kalan (T-023 kabul testi):** Dock tıklaması ve Cmd-Tab ile çözme elle doğrulanmadı; spike aktivasyonu `open -a` ile tetikledi. T-023 kapısında elle doğrulanır. Başarısız olursa `freeze` kurallardan kaldırılır ve dondurma yalnız elle yapılan, en fazla 30 dk süren bir işlem olarak kalır (ADR 0004).
