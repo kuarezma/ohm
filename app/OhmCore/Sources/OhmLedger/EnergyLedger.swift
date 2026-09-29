@@ -170,7 +170,10 @@ public actor EnergyLedger: EnergyLedgerWriting {
         }
 
         if let gpuWatts = tick.system.gpu {
-            let energyUj = Int64(gpuWatts * Double(durationMs) * 1000.0)
+            // IOReport's own measurement interval; the tick interval is only a fallback.
+            let gpuDur = (tick.system.gpuInterval ?? tick.interval).components
+            let gpuSeconds = Double(gpuDur.seconds) + Double(gpuDur.attoseconds) / 1e18
+            let energyUj = Int64(gpuWatts * gpuSeconds * 1_000_000.0)
             bucket.gpuUj = (bucket.gpuUj ?? 0) + energyUj
         }
 
@@ -198,6 +201,15 @@ public actor EnergyLedger: EnergyLedgerWriting {
         }
 
         memoryBuckets[key] = bucket
+
+        // tick.interval is awake time; sleep inside the tick is recorded as a gap, not as coverage.
+        // Placement assumes the awake part is the tail (the timer fires right after wake).
+        let sleptS = tick.asleep.components.seconds
+        if sleptS >= 1 {
+            let awakeEnd = tick.wallClock.timeIntervalSince1970 - Double(durationMs) / 1000.0
+            let endS = Int64(floor(awakeEnd))
+            try recordSamplingGap(start_s: endS - sleptS, end_s: endS, reason: "sleep")
+        }
 
         if let burst = tick.burst {
             let startS = Int64(floor(burst.window.start.timeIntervalSince1970))

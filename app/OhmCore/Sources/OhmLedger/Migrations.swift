@@ -185,7 +185,7 @@ internal enum SchemaManager {
                 try setUserVersion(db: db, version: migration.version)
                 try SQLiteBridge.exec(db: db, sql: "COMMIT;")
             } catch {
-                try? SQLiteBridge.exec(db: db, sql: "ROLLBACK;")
+                _ = try? SQLiteBridge.exec(db: db, sql: "ROLLBACK;")
                 throw error
             }
         }

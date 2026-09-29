@@ -106,6 +106,10 @@ public struct SystemPower: Sendable, Equatable {
     public var systemLoad: Double?
     public var systemLoadAge: Duration?
     public var clusterActive: ClusterResidency?
+    /// Which source `systemLoad` came from: SystemLoad, or V × I while discharging (ADR 0002 § 5 `sys_src`).
+    public var systemSource: SystemEnergySource
+    /// IOReport's own measurement interval for `gpu` (awake time); GPU energy = gpu × gpuInterval.
+    public var gpuInterval: Duration?
 
     public init(
         cpuP: Double,
@@ -113,7 +117,9 @@ public struct SystemPower: Sendable, Equatable {
         gpu: Double? = nil,
         systemLoad: Double? = nil,
         systemLoadAge: Duration? = nil,
-        clusterActive: ClusterResidency? = nil
+        clusterActive: ClusterResidency? = nil,
+        systemSource: SystemEnergySource? = nil,
+        gpuInterval: Duration? = nil
     ) {
         self.cpuP = cpuP
         self.cpuE = cpuE
@@ -121,6 +127,8 @@ public struct SystemPower: Sendable, Equatable {
         self.systemLoad = systemLoad
         self.systemLoadAge = systemLoadAge
         self.clusterActive = clusterActive
+        self.systemSource = systemSource ?? (systemLoad != nil ? .systemLoad : .none)
+        self.gpuInterval = gpuInterval
     }
 }
 
@@ -130,19 +138,29 @@ public struct ProcessDelta: Sendable, Equatable {
     public var energy_nJ: UInt64
     public var pEnergy_nJ: UInt64
     public var cpuTime_ns: UInt64
+    /// Ledger `app.display_name`, `app.bundle_path`, `app.category`; only AttributionResolver knows them.
+    public var displayName: String
+    public var bundlePath: String?
+    public var category: AppCategory
 
     public init(
         identity: ProcessIdentity,
         app: AppKey,
         energy_nJ: UInt64,
         pEnergy_nJ: UInt64,
-        cpuTime_ns: UInt64
+        cpuTime_ns: UInt64,
+        displayName: String? = nil,
+        bundlePath: String? = nil,
+        category: AppCategory = .userApp
     ) {
         self.identity = identity
         self.app = app
         self.energy_nJ = energy_nJ
         self.pEnergy_nJ = pEnergy_nJ
         self.cpuTime_ns = cpuTime_ns
+        self.displayName = displayName ?? app.value
+        self.bundlePath = bundlePath
+        self.category = category
     }
 }
 
@@ -158,7 +176,11 @@ public struct UnreadableSummary: Sendable, Codable, Equatable {
 
 public struct SampleTick: Sendable {
     public var wallClock: Date
+    /// Awake time since the previous tick (mach_absolute_time; stops during system sleep). Power
+    /// values are averages over this interval, so power × interval is energy (T-024 #8).
     public var interval: Duration
+    /// System sleep inside this tick's span; not part of `interval` (ledger `sampling_gap`, 'sleep').
+    public var asleep: Duration
     public var system: SystemPower
     public var burst: EnergyBurst?
     public var battery: BatteryState
@@ -174,10 +196,12 @@ public struct SampleTick: Sendable {
         battery: BatteryState,
         thermal: ThermalLevel,
         processes: [ProcessDelta],
-        unreadable: UnreadableSummary
+        unreadable: UnreadableSummary,
+        asleep: Duration = .zero
     ) {
         self.wallClock = wallClock
         self.interval = interval
+        self.asleep = asleep
         self.system = system
         self.burst = burst
         self.battery = battery

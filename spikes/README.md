@@ -126,3 +126,15 @@ Karar: **PASS.** (1) Dondurunca durum `T` oldu. (2) `open -a` ile SIGCONT arası
 - İki katmanlı kurtarma gerekli ve yeterli görünüyor: ayrı watchdog süreci ve açılışta journal kurtarma. Üretimde watchdog bir LaunchAgent olabilir; bu, T-001 ADR 0004 için bir karar noktası.
 - Dock tıklaması otomasyonla test edilemedi; aktivasyon `open -a` ile tetiklendi. **Dock davranışı elle doğrulanacak.** Cmd-Tab da elle doğrulanmalı.
 - Ölçülen gecikme `open` komutunun başlangıcından SIGCONT'a kadar olan süre. Pencerenin ekrana gelmesi (uygulamanın kuyruktaki olayları işlemesi) bu süreye dahil değil.
+
+## T-021 — `OhmSampling` üretim katmanı: ölçümler
+
+Kod: `app/OhmCore/Sources/{COhmSys,OhmSampling}`. Ölçüm düzeneği commit edilmedi (scratch SwiftPM paketi, `-c release`, OhmCore'a path bağımlılığı). M3, macOS 27, Swift 6.4.
+
+- **`dlopen` doğrulandı:** `dlopen("/usr/lib/libIOReport.dylib")` dosya diskte olmadığı halde dyld paylaşımlı önbelleğinden çözülüyor; 12 sembol `dlsym` ile bulundu. `-weak-lIOReport` yedeğine gerek yok. Canlı test: `ioreportLoadsViaDlopenAndReportsLiveChannels` (stage 0, GPU watt ve P/E doluluğu nil değil).
+- **Süreç taraması:** `yes` entegrasyon testinde listenin başında: `yes 4.40 W, readable 445, EPERM 290`. Tarama başına CPU (1 sn aralık, 20 örnek, beş koşu): ort. 1,7–2,7 ms, en kötü 6–10 ms (yeni süreçlerin atıf çözümü olan tick'ler). Ham sistem çağrısı maliyeti (`proc_listallpids` + ~780 `proc_pid_rusage`) 0,09 + 1,95 ms; Swift tarafının payı ihmal edilebilir, maliyet çekirdekte.
+- **IOReport örneği:** Tüm "Energy Model" grubuna abonelikte 2,6 ms/örnek. Abonelik yalnız kullanılan kanallara (`GPU Energy`, `CPU Energy`, `DRAM`, `ANE` + "CPU Stats") daraltılınca **1,2–1,5 ms**.
+- **Boşta (10 sn kadans, 60 sn, üç koşu):** Sürecin kendi CPU'su **%0,04–0,07** (bütçe <%0,5). Tick başına 5,3–8,5 ms; bu değer `start()` ön örneklemesini ve ilk tick'teki ~100 sürecin atıf çözümünü yalnız 5 tick'e bölüyor. Bellek: `phys_footprint` motor öncesi 1,8 MB, 60 sn sonra 4,9–5,1 MB (**Δ 3,1–3,3 MB**; ADR 0001 § 6 "örnekleme durumu ≤2 MB" kalemini aşıyor; Δ, libIOReport/CF abonelik sözlükleri ve eşzamanlılık çalışma zamanının ilk yüklenmesini de içeriyor). RSS 10,6–10,8 MB.
+- **Popover açık (1 sn kadans, 20–30 sn):** Süreç CPU'su %0,31–0,74, tick başına 3,3–8,0 ms (koşudan koşuya oynak; `.utility` iş E-çekirdekte düşük frekansta koşuyor, ölçümlerin bir kısmı pilde). Tick aralığı 1,06–1,11 sn (10 % tolerans kullanılıyor).
+- **GPU örtüşmesi (ADR 0002 § 5 protokolü):** Oran +0,0007 / +0,0005 / −0,0005 → **≈0**; `ri_energy_nj` GPU işini içermiyor. Ayrıntı ADR 0002'nin GPU kararı satırında.
+- **Patlama yakalayıcı:** 60 sn'lik boşta koşularda hiç "Energy Model" patlaması gelmedi (T-010 ile tutarlı); mantık birim testlerle doğrulandı, canlı patlama gözlenmedi.
