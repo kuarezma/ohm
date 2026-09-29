@@ -73,6 +73,8 @@ public enum FreezeVeto: String, Sendable, Codable, Hashable, CaseIterable {
     // Dynamic vetoes (§ 2 table).
     case frontmost, notHidden, recentlyActive, refreezeGrace
     case audio, camera, powerAssertion, eventTap, outOfBundleChild, debugged, userNeverList, unsavedDocument
+    /// A safety probe could not measure (T-024 #7): unknown is never treated as safe.
+    case safetyProbeFailed
     // General state.
     case powerOffInProgress, postWakeQuiet, shuttingDown, protectionNotReady, journalUnwritable
     // Tree (§ 3).

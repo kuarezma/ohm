@@ -110,7 +110,7 @@ final class Freezer {
             return
         }
         guard s == p.startAbsTime else { throw FreezeFailure.identityMismatch(p.pid) }
-        guard ThawTable.add(p.pid) else { throw FreezeFailure.tableFull }
+        guard ThawTable.add(p) else { throw FreezeFailure.tableFull }
         let rc = signaler.send(p.pid, SIGSTOP)
         if rc != 0 {
             ThawTable.remove(p.pid)
@@ -145,21 +145,54 @@ final class Freezer {
         }
     }
 
-    /// D10: best effort, no step depends on the previous one. Last stopped is continued first.
-    func rollback(_ g: UUID, _ stopped: [ProcessIdentity], reason: ThawReason, journal: any FreezeJournaling) {
-        for p in stopped.reversed() where signaler.matches(p) { _ = signaler.send(p.pid, SIGCONT) }
-        stopped.forEach { ThawTable.remove($0.pid) }
-        // If this write fails, recovery repeats the identity-checked SIGCONT: harmless.
-        try? journal.append(JournalRecord(op: .thaw, group: g, reason: reason.rawValue), sync: false)
+    /// Members the last rollback could not continue (the Governor keeps and retries them).
+    private(set) var lastRollbackUnresolved: [ProcessIdentity] = []
+
+    /// SIGCONT in the given order. A member is resolved when it was continued, is gone, or its pid
+    /// now belongs to another process; anything else (probe error, failed kill) stays unresolved and
+    /// stays in the crash-handler table (T-024 #1).
+    func continueMembers(_ ordered: [ProcessIdentity]) -> [ProcessIdentity] {
+        var unresolved: [ProcessIdentity] = []
+        for p in ordered {
+            switch signaler.identityStatus(p) {
+            case .gone, .mismatch:
+                ThawTable.remove(p.pid)
+            case .unknown:
+                unresolved.append(p)
+            case .match:
+                let rc = signaler.send(p.pid, SIGCONT)
+                if rc == 0 || rc == ESRCH { ThawTable.remove(p.pid) } else { unresolved.append(p) }
+            }
+        }
+        return unresolved
     }
 
-    /// Helpers first (reverse stop order), root last (§ 3). Synchronous. Throws only if the journal
-    /// write fails, after every SIGCONT has already been sent.
-    func thaw(_ group: FrozenGroup, reason: ThawReason, journal: (any FreezeJournaling)?) throws {
-        for h in group.helpers.reversed() where signaler.matches(h) { _ = signaler.send(h.pid, SIGCONT) }
-        if signaler.matches(group.root) { _ = signaler.send(group.root.pid, SIGCONT) }
-        group.members.forEach { ThawTable.remove($0.pid) }
-        // No fsync: a lost thaw record only makes recovery repeat a verified SIGCONT.
-        try journal?.append(JournalRecord(op: .thaw, group: group.id, reason: reason.rawValue), sync: false)
+    /// D10: best effort, no step depends on the previous one. Last stopped is continued first.
+    /// The thaw record is written only when every member is resolved; otherwise the group stays
+    /// open in the journal (the watcher covers it) and the Governor retries.
+    @discardableResult
+    func rollback(_ g: UUID, _ stopped: [ProcessIdentity], reason: ThawReason, journal: any FreezeJournaling) -> [ProcessIdentity] {
+        let unresolved = continueMembers(stopped.reversed())
+        lastRollbackUnresolved = unresolved
+        if unresolved.isEmpty {
+            // If this write fails, recovery repeats the identity-checked SIGCONT: harmless.
+            try? journal.append(JournalRecord(op: .thaw, group: g, reason: reason.rawValue), sync: false)
+        }
+        return unresolved
+    }
+
+    /// Helpers first (reverse stop order), root last (§ 3). Synchronous. Returns the unresolved
+    /// members; the thaw record is written only when there are none. Throws only if that write fails.
+    func thaw(_ group: FrozenGroup, reason: ThawReason, journal: (any FreezeJournaling)?) throws -> [ProcessIdentity] {
+        try finish(group.id, ordered: group.helpers.reversed() + [group.root], reason: reason, journal: journal)
+    }
+
+    func finish(_ id: UUID, ordered: [ProcessIdentity], reason: ThawReason, journal: (any FreezeJournaling)?) throws -> [ProcessIdentity] {
+        let unresolved = continueMembers(ordered)
+        if unresolved.isEmpty {
+            // No fsync: a lost thaw record only makes recovery repeat a verified SIGCONT.
+            try journal?.append(JournalRecord(op: .thaw, group: id, reason: reason.rawValue), sync: false)
+        }
+        return unresolved
     }
 }

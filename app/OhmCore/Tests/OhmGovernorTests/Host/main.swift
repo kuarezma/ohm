@@ -39,6 +39,7 @@ final class LockOnlyProtection: ProtectionProviding {
     func activate() -> ProtectionMode { mode }
     func isReady() -> Bool { FileLock.isHeldByAnother(path: paths.thawdLock) }
     func watcherDied() -> ProtectionMode { mode }
+    func abandon() { mode = .none }
 }
 
 /// Test processes must never outlive their parent (e.g. if the test runner crashes). A spawned
@@ -65,6 +66,43 @@ case "burn":
         for i in 0..<1_000_000 { x &+= UInt64(i) ^ (x >> 3) }
     }
     print(x == 42 ? "" : "done")
+
+case "compact-fault", "rewrite-fault":
+    // T-024 #2: a short write while renewing the journal (RLIMIT_FSIZE makes write() return short).
+    // Records name pids above kern.maxproc, so nothing can ever be signalled.
+    guard let dir = arg("--dir") else { exit(2) }
+    let paths = JournalPaths(directory: dir)
+    signal(SIGXFSZ, SIG_IGN)
+    var lim = rlimit()
+    getrlimit(RLIMIT_FSIZE, &lim)
+    let normal = lim
+    func limitFileSize(_ bytes: rlim_t) { var l = normal; l.rlim_cur = bytes; setrlimit(RLIMIT_FSIZE, &l) }
+    let dummy = JournalPid(pid: 999_990, start: 1, role: .root)
+    if role == "rewrite-fault" {
+        do {
+            let (j, _) = try JournalSession.open(paths: paths)
+            try j.append(JournalRecord(op: .freeze, group: UUID(), app: "dummy", pids: [dummy]), sync: true)
+        } catch { say("setup failed \(error)"); exit(1) }
+        limitFileSize(40)
+        do { _ = try JournalSession.open(paths: paths, ownerLockRetry: 1); say("OPEN ok") } catch { say("OPEN threw \(error)") }
+        var l = normal; setrlimit(RLIMIT_FSIZE, &l)
+    } else {
+        let j: FreezeJournal
+        do { (j, _) = try JournalSession.open(paths: paths) } catch { say("setup failed \(error)"); exit(1) }
+        let g = UUID()
+        try? j.append(JournalRecord(op: .freeze, group: g, app: "dummy", pids: [dummy]), sync: true)
+        try? j.append(JournalRecord(op: .thaw, group: g, reason: "user"), sync: false)
+        j.compactThresholdBytes = 0
+        limitFileSize(40)
+        do { try j.compactIfIdle(); say("COMPACT ok") } catch { say("COMPACT threw \(error)") }
+        var l = normal; setrlimit(RLIMIT_FSIZE, &l)
+        do {
+            try j.append(JournalRecord(op: .freeze, group: UUID(), app: "dummy", pids: [dummy]), sync: true)
+            say("APPEND ok")
+        } catch { say("APPEND threw \(error)") }
+    }
+    let snap = JournalReader.read(path: paths.journal)
+    say("JOURNAL corrupt=\(snap.corrupt) ignoredTail=\(snap.ignoredTail) ops=\(snap.records.map(\.op.rawValue))")
 
 case "thawd":
     ThawWatcher.main(arguments: Array(args.dropFirst()))
@@ -111,9 +149,11 @@ case "ohm":
     dispatchMain()
 
 case "sigtest":
-    guard let pidS = arg("--pid"), let pid = Int32(pidS) else { exit(2) }
+    guard let pidS = arg("--pid"), let pid = Int32(pidS), let id = ProcessProbe.identity(of: pid) else { exit(2) }
     ThawTable.installSignalHandlers()
-    _ = ThawTable.add(pid)
+    // --wrong-start simulates pid reuse: the table entry names another process instance (T-024 #6).
+    let entry = args.contains("--wrong-start") ? ProcessIdentity(pid: pid, startAbsTime: id.startAbsTime + 1) : id
+    _ = ThawTable.add(entry)
     kill(pid, SIGSTOP)
     usleep(50_000)
     say("STOPPED stat=\(ProcessProbe.isStopped(pid) ? "T" : "?") — raising SIGSEGV")

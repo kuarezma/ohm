@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import OhmJournal
 import OhmModel
+import Synchronization
 import Testing
 
 // Signals only reach processes these tests spawn; teardown always sends SIGCONT, then SIGKILL.
@@ -11,6 +12,12 @@ import Testing
 private func safeKill(_ pid: Int32, _ sig: Int32) -> Int32 {
     precondition(pid > 1, "refusing kill(\(pid))")
     return Darwin.kill(pid, sig)
+}
+
+private final class Flag: Sendable {
+    private let v = Atomic<Bool>(false)
+    func set() { v.store(true, ordering: .sequentiallyConsistent) }
+    var value: Bool { v.load(ordering: .sequentiallyConsistent) }
 }
 
 private final class Spawned {
@@ -87,6 +94,93 @@ struct OhmJournalTests {
         #expect(r.discardedForBoot && r.thawed.isEmpty)
         #expect(ProcessProbe.isStopped(a))
         #expect(snap.records.map(\.op) == [.open] && snap.records.first?.boot == ProcessProbe.bootSessionUUID())
+    }
+
+    @Test("T-024 #1: recovery keeps a group whose SIGCONT failed open, and a later run finishes it")
+    func r1_recoveryUnresolved() throws {
+        let sp = Spawned(); defer { sp.cleanup() }
+        let paths = tmp("r1rec")
+        let a = sp.sleep()
+        sp.stop(a)
+        var body = line(JournalRecord(op: .open, boot: ProcessProbe.bootSessionUUID(), owner: me))
+        body += line(JournalRecord(op: .freeze, group: UUID(), app: "x", pids: [pidEntry(a)]))
+        try body.write(toFile: paths.journal, atomically: false, encoding: .utf8)
+        struct FailingCont: RecoverySignaling {
+            func identityStatus(_ id: ProcessIdentity) -> ProcessProbe.IdentityStatus { ProcessProbe.identityStatus(id) }
+            func sendCont(_ pid: Int32) -> Int32 { EPERM }
+            func clearBackground(_ pid: Int32) -> Int32 { EPERM }
+        }
+        do {
+            let lock = try OwnerLock.acquire(paths: paths, retryFor: 1)
+            let r = JournalRecovery.run(lock: lock, owner: me, consumeNotices: true, signaler: FailingCont())
+            #expect(r.unresolved.map(\.pid) == [a] && r.thawed.isEmpty)
+            #expect(JournalReader.read(path: paths.journal).openGroups().map { $0.pids.map(\.pid) } == [[a]])
+            #expect(ProcessProbe.isStopped(a))
+        }
+        let lock = try OwnerLock.acquire(paths: paths, retryFor: 1)
+        let r2 = JournalRecovery.run(lock: lock, owner: me, consumeNotices: true)
+        print("T-024 #1 recovery: second run thawed=\(r2.thawed.map(\.pid)) a=\(ProcessProbe.isStopped(a) ? "T" : "S")")
+        #expect(r2.thawed.map(\.pid) == [a] && !ProcessProbe.isStopped(a))
+        #expect(JournalReader.read(path: paths.journal).openGroups().isEmpty)
+    }
+
+    @Test("T-024 #3: journal written by an Ohm that died right after a recovery is recovered at once")
+    func r3_watcherWindow() throws {
+        let sp = Spawned(); defer { sp.cleanup() }
+        let paths = tmp("r3")
+        let a = sp.sleep()
+        // A leftover group (pid above kern.maxproc, never signalled) makes the loop recover once.
+        var body = line(JournalRecord(op: .open, boot: ProcessProbe.bootSessionUUID(), owner: me))
+        body += line(JournalRecord(op: .freeze, group: UUID(), app: "old", pids: [JournalPid(pid: 999_991, start: 1, role: .root)]))
+        try body.write(toFile: paths.journal, atomically: false, encoding: .utf8)
+        let start = ProcessProbe.startAbs(a)!
+        let journalPath = paths.journal
+        let injected = Flag(), stop = Flag(), finished = Flag()
+        let t = Thread {
+            ThawWatcher.agentLoop(paths: paths, pollTimeoutSeconds: 30, afterRecovery: {
+                guard !injected.value else { return }
+                injected.set()
+                // "A new Ohm" stops `a`, journals it, and dies — between recovery and the next wait.
+                _ = Darwin.kill(a, SIGSTOP)
+                while !ProcessProbe.isStopped(a) { usleep(1_000) }
+                let rec = JournalRecord(op: .freeze, group: UUID(), app: "new",
+                                        pids: [JournalPid(pid: a, start: start, role: .root)])
+                if let h = FileHandle(forWritingAtPath: journalPath) {
+                    h.seekToEndOfFile()
+                    h.write(try! rec.encodedLine())
+                    try? h.close()
+                }
+            }, shouldStop: { stop.value })
+            finished.set()
+        }
+        t.start()
+        var thawed = false
+        let t0 = Date()
+        while Date().timeIntervalSince(t0) < 3 {
+            if injected.value, !ProcessProbe.isStopped(a) { thawed = true; break }
+            usleep(5_000)
+        }
+        print("T-024 #3 watcher: injected=\(injected.value) thawed=\(thawed) after \(String(format: "%.0f", Date().timeIntervalSince(t0) * 1000)) ms")
+        stop.set()
+        FileManager.default.createFile(atPath: paths.directory + "/wake", contents: Data())   // wake kevent
+        for _ in 0..<200 where !finished.value { usleep(10_000) }
+        #expect(thawed)
+        #expect(finished.value)
+    }
+
+    @Test("T-024 #6: unknown boot session (no open record) is not a match → no signal")
+    func r6_unknownBoot() throws {
+        let sp = Spawned(); defer { sp.cleanup() }
+        let paths = tmp("r6")
+        let a = sp.sleep()
+        sp.stop(a)
+        let body = line(JournalRecord(op: .freeze, group: UUID(), app: "x", pids: [pidEntry(a)]))
+        try body.write(toFile: paths.journal, atomically: false, encoding: .utf8)
+        let lock = try OwnerLock.acquire(paths: paths, retryFor: 1)
+        let r = JournalRecovery.run(lock: lock, owner: me, consumeNotices: true)
+        print("T-024 #6 recovery: thawed=\(r.thawed.map(\.pid)) a=\(ProcessProbe.isStopped(a) ? "T" : "S")")
+        #expect(r.thawed.isEmpty)
+        #expect(ProcessProbe.isStopped(a))
     }
 
     @Test("6: pid matches but start time differs → no signal")
@@ -174,11 +268,11 @@ struct OhmJournalTests {
     @Test("thaw table: idempotent add, contains, remove")
     func thawTable() {
         let fake: Int32 = 4_000_123   // above kern.maxproc; never signalled
-        #expect(ohm_thaw_table_add(fake) == 0)
-        #expect(ohm_thaw_table_add(fake) == 0)
+        #expect(ohm_thaw_table_add(fake, 42) == 0)
+        #expect(ohm_thaw_table_add(fake, 42) == 0)
         #expect(ohm_thaw_table_contains(fake) == 1)
         #expect(ohm_thaw_table_remove(fake) == 1)
         #expect(ohm_thaw_table_contains(fake) == 0)
-        #expect(ohm_thaw_table_add(0) == -1)
+        #expect(ohm_thaw_table_add(0, 42) == -1 && ohm_thaw_table_add(4_000_124, 0) == -1)
     }
 }

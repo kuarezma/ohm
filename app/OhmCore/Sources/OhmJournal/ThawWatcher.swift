@@ -57,35 +57,54 @@ public enum ThawWatcher {
             withExtendedLifetime(thawdLock) {}
             exit(0)
         case .agent:
-            while true {
-                waitForOpenGroups(paths: paths)
-                recoverOnce(paths: paths)
-                // Do not re-check immediately: if a rewrite failed the journal still looks open and
-                // an immediate retry would spin. The next check follows a change or the timeout.
-                waitForChange(paths: paths, timeoutSeconds: 60)
+            agentLoop(paths: paths)
+            withExtendedLifetime(thawdLock) {}
+            exit(0)
+        }
+    }
+
+    /// LaunchAgent loop. After every recovery the journal is checked again *after* the watch is
+    /// armed (a new Ohm may have written and died in between, T-024 #3). If recovery could not
+    /// finish (unresolved members, failed rewrite) it is retried with a bounded backoff (≤ 5 s)
+    /// instead of spinning.
+    public static func agentLoop(paths: JournalPaths, pollTimeoutSeconds: Int = 60,
+                                 afterRecovery: (() -> Void)? = nil, shouldStop: () -> Bool = { false }) {
+        var failures = 0
+        while !shouldStop() {
+            waitForOpenGroups(paths: paths, timeoutSeconds: pollTimeoutSeconds, shouldStop: shouldStop)
+            if shouldStop() { return }
+            let r = recoverOnce(paths: paths)
+            afterRecovery?()
+            if r == nil || r?.rewriteFailed == true || r?.unresolved.isEmpty == false {
+                failures = min(failures + 1, 6)
+                usleep(useconds_t(min(5.0, 0.1 * pow(2, Double(failures - 1))) * 1e6))
+            } else {
+                failures = 0
             }
         }
     }
 
-    static func recoverOnce(paths: JournalPaths) {
+    @discardableResult
+    static func recoverOnce(paths: JournalPaths) -> RecoveryReport? {
         let lock: OwnerLock
         do { lock = try OwnerLock.acquireBlocking(paths: paths) } catch {
             log("cannot lock owner.lock: \(error)")
-            return
+            return nil
         }
         let me = JournalPid(pid: getpid(), start: ProcessProbe.startAbs(getpid()) ?? 0)
         let r = JournalRecovery.run(lock: lock, owner: me, consumeNotices: false)
-        log("recovery groups=\(r.openGroupsFound) thawed=\(r.thawed.map(\.pid)) ecoreCleared=\(r.eCoreCleared.map(\.pid)) skipped=\(r.skippedIdentity.map(\.pid)) bootDiscarded=\(r.discardedForBoot) corrupt=\(r.corrupt)")
+        log("recovery groups=\(r.openGroupsFound) thawed=\(r.thawed.map(\.pid)) ecoreCleared=\(r.eCoreCleared.map(\.pid)) skipped=\(r.skippedIdentity.map(\.pid)) unresolved=\(r.unresolved.map(\.pid)) unverifiedBoot=\(r.unverifiedBoot.map(\.pid)) bootDiscarded=\(r.discardedForBoot) corrupt=\(r.corrupt) rewriteFailed=\(r.rewriteFailed)")
         lock.release()
+        return r
     }
 
     static func hasOpenGroups(_ paths: JournalPaths) -> Bool {
         !JournalReader.read(path: paths.journal).openGroups().isEmpty
     }
 
-    static func waitForOpenGroups(paths: JournalPaths) {
-        while !hasOpenGroups(paths) {
-            waitForChange(paths: paths, timeoutSeconds: 60, recheck: { hasOpenGroups(paths) })
+    static func waitForOpenGroups(paths: JournalPaths, timeoutSeconds: Int = 60, shouldStop: () -> Bool = { false }) {
+        while !hasOpenGroups(paths), !shouldStop() {
+            waitForChange(paths: paths, timeoutSeconds: timeoutSeconds, recheck: { hasOpenGroups(paths) })
         }
     }
 

@@ -14,6 +14,8 @@ public struct GovernorConfig: Sendable {
     public var verifyLimit = 0.1
     public var verifyPoll = 0.005
     public var healthCheckDelay = 5.0
+    /// How long a newly started watcher may take to hold `thawd.lock` (waited without blocking the actor).
+    public var protectionStartTimeout = 2.0
     public var postWakeQuiet = 120.0
     public var powerOffReenable = 300.0
     public var eCoreFrontmostDelay = 2.0
@@ -68,6 +70,19 @@ public actor Governor: Governing {
     private var exitSources: [Int32: any DispatchSourceProcess] = [:]
     private var watcherSource: (any DispatchSourceProcess)?
 
+    /// Undo that could not complete (failed SIGCONT / BG removal or probe error). The journal group
+    /// stays open and the crash-handler table keeps the pids until every member is resolved (T-024 #1).
+    private struct PendingUndo {
+        enum Kind { case freeze, eCore }
+        let kind: Kind
+        let id: UUID
+        var members: [ProcessIdentity]
+        let reason: ThawReason
+    }
+    private var pendingUndo: [UUID: PendingUndo] = [:]
+    private var retryScheduled = false
+    private var retryAttempt = 0
+
     public init(config: GovernorConfig = GovernorConfig(),
                 journal: sending (any FreezeJournaling)?,
                 appControl: sending any AppControlling,
@@ -92,7 +107,9 @@ public actor Governor: Governing {
 
     // MARK: Status (UI, CLI `ohm status`, tests)
 
-    public var protectionMode: ProtectionMode { protection.mode }
+    /// `.none` whenever the watcher is not verifiably ready, whatever mode was chosen.
+    public var protectionMode: ProtectionMode { protection.isReady() ? protection.mode : .none }
+    public var pendingUndoPids: [Int32] { pendingUndo.values.flatMap { $0.members.map(\.pid) }.sorted() }
     public var frozenRootPids: [Int32] { groups.values.map(\.root.pid).sorted() }
     public func frozenMembers(root: Int32) -> [Int32]? {
         groupByRoot[root].flatMap { groups[$0] }.map { $0.members.map(\.pid) }
@@ -105,11 +122,25 @@ public actor Governor: Governing {
     // MARK: Protection (§ 6)
 
     /// Chooses the protection mode; call at launch and when SMAppService status changes.
+    /// The readiness wait suspends instead of blocking the Governor queue (T-024 #5): activation
+    /// thaws keep flowing while a watcher starts.
     @discardableResult
-    public func startProtection() -> ProtectionMode {
-        let mode = protection.activate()
+    public func startProtection() async -> ProtectionMode {
+        let mode = await confirmReady(protection.activate())
         modeChanged(mode)
         return mode
+    }
+
+    /// A started watcher that does not take `thawd.lock` in time is stopped: mode `none`.
+    private func confirmReady(_ mode: ProtectionMode) async -> ProtectionMode {
+        guard mode != .none else { return .none }
+        let deadline = Date().addingTimeInterval(config.protectionStartTimeout)
+        while !protection.isReady(), Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        if protection.isReady() { return mode }
+        protection.abandon()
+        return .none
     }
 
     private func modeChanged(_ mode: ProtectionMode) {
@@ -131,8 +162,8 @@ public actor Governor: Governing {
         }
     }
 
-    private func spawnedWatcherExited() {
-        modeChanged(protection.watcherDied())
+    private func spawnedWatcherExited() async {
+        modeChanged(await confirmReady(protection.watcherDied()))
     }
 
     // MARK: Governing
@@ -142,6 +173,9 @@ public actor Governor: Governing {
             generation &+= 1
             desired = newDesired
         }
+        // Every await below may interleave with another reconcile, a power-off, a mode change…:
+        // after each one the loop continues only if nothing moved the generation (T-024 #4).
+        let token = generation
         var report = ReconcileReport()
         // Rule contributions that disappeared (level-triggered, ADR 0003 § 3).
         for g in groups.values where g.byRule {
@@ -150,16 +184,17 @@ public actor Governor: Governing {
         for (root, g) in lane.groups where g.origin.isRule {
             if g.key.flatMap({ desired.effects[$0]?.eCore }) == nil { removeECore(root: root, reason: .ruleEnded) }
         }
-        let snapshot = desired
-        for (key, effect) in snapshot.effects {
+        for key in desired.effects.keys.sorted(by: { $0.value < $1.value }) {
             for app in appControl.apps(for: key) {
+                guard generation == token, let effect = desired.effects[key] else { return report }
                 if let fp = effect.freeze, groupByRoot[app.pid] == nil, inFlight[app.pid] == nil {
                     let origin = effect.origins[.freeze]?.first(where: \.isRule) ?? .rule(UUID())
                     let minHidden = max(Double(fp.minHiddenSeconds), config.minHiddenFloor)
                     report.outcomes[key] = await runFreeze(app: app, key: key, origin: origin,
                                                            minHidden: minHidden, confirmedBackground: false)
+                    guard generation == token else { return report }
                 }
-                if let ep = effect.eCore {
+                if let ep = desired.effects[key]?.eCore {
                     let origin = effect.origins[.eCore]?.first(where: \.isRule) ?? .rule(UUID())
                     if let o = ensureECore(app: app, key: key, origin: origin, params: ep), report.outcomes[key] == nil {
                         report.outcomes[key] = o
@@ -222,6 +257,7 @@ public actor Governor: Governing {
             lastActive[pid] = Date()
             // D5: activation always thaws; nothing can prevent it.
             if let id = groupByRoot[pid] { thawGroup(id, reason: .activation) }
+            if pendingUndo.values.contains(where: { $0.members.contains { $0.pid == pid } }) { retryPending() }
             if let g = lane.group(root: pid), g.params.whileFrontmost == .release {
                 removeECore(root: pid, reason: .frontmost)
             }
@@ -255,6 +291,16 @@ public actor Governor: Governing {
 
     /// Ambient tick (10 s, ADR 0004 § 8): wall-clock limits, new E-core helpers, pending rule effects.
     public func tick() async {
+        retryPending()
+        // No effect may exist or grow without a verifiably ready watcher (D1, T-024 #5).
+        guard protection.isReady() else {
+            if !groups.isEmpty || !lane.groups.isEmpty {
+                generation &+= 1
+                continuation.yield(.protectionChanged(.none))
+                thawEverything(.protectionLost, includeECore: true)
+            }
+            return
+        }
         expireByWallClock()
         for (root, g) in lane.groups {
             guard let journal, signaler.matches(g.app.identity) else { continue }
@@ -334,6 +380,10 @@ public actor Governor: Governing {
             return .frozen(group: g)
         case .failure(let f):
             restoreHide(op, hiddenByOhm: hiddenByOhm)
+            let unresolved = freezer.lastRollbackUnresolved
+            if !unresolved.isEmpty {
+                keepPending(PendingUndo(kind: .freeze, id: g, members: unresolved, reason: f.thawReason))
+            }
             continuation.yield(.rolledBack(group: g, reason: f.thawReason))
             switch f {
             case .veto(let v): return veto(op, v)
@@ -463,7 +513,12 @@ public actor Governor: Governing {
         g.members.forEach { unwatch($0.pid) }
         manualFreezes.remove(g.root)
         var journalFailed = false
-        do { try freezer.thaw(g, reason: reason, journal: journal) } catch { journalFailed = true }
+        do {
+            let unresolved = try freezer.thaw(g, reason: reason, journal: journal)
+            if !unresolved.isEmpty {
+                keepPending(PendingUndo(kind: .freeze, id: g.id, members: unresolved, reason: reason))
+            }
+        } catch { journalFailed = true }
         if reason == .activation || reason == .maxDuration {
             graceUntil[g.root] = Date().addingTimeInterval(config.refreezeGrace)
         }
@@ -471,8 +526,62 @@ public actor Governor: Governing {
         let noHealthCheck: Set<ThawReason> = [.terminated, .quit, .powerOff, .rollback]
         if !noHealthCheck.contains(reason) { scheduleHealthCheck(g) }
         if journalFailed { disableEffects() }
-        if groups.isEmpty, lane.groups.isEmpty, disabledReason == nil { journal?.compactIfIdle() }
+        compactIfIdle()
         return true
+    }
+
+    private func compactIfIdle() {
+        guard groups.isEmpty, lane.groups.isEmpty, pendingUndo.isEmpty, disabledReason == nil else { return }
+        do { try journal?.compactIfIdle() } catch { disableEffects() }
+    }
+
+    // MARK: Unresolved undo (T-024 #1)
+
+    private func keepPending(_ p: PendingUndo) {
+        pendingUndo[p.id] = p
+        scheduleRetry()
+    }
+
+    /// Retries every unresolved SIGCONT / BG removal; writes the thaw / ecoreOff record only once a
+    /// group is fully resolved.
+    private func retryPending() {
+        for (id, p) in pendingUndo {
+            do {
+                let left: [ProcessIdentity]
+                switch p.kind {
+                case .freeze: left = try freezer.finish(id, ordered: p.members, reason: p.reason, journal: journal)
+                case .eCore: left = try lane.finish(id, ordered: p.members, reason: p.reason, journal: journal)
+                }
+                if left.isEmpty {
+                    pendingUndo[id] = nil
+                    continuation.yield(p.kind == .freeze ? .thawed(group: id, reason: p.reason)
+                                                         : .eCoreRemoved(group: id, reason: p.reason))
+                } else {
+                    pendingUndo[id]?.members = left
+                }
+            } catch {
+                pendingUndo[id] = nil
+                disableEffects()
+            }
+        }
+        if pendingUndo.isEmpty { retryAttempt = 0 } else { scheduleRetry() }
+    }
+
+    /// Bounded backoff: 0.1 s, 0.2 s, … up to 5 s between attempts.
+    private func scheduleRetry() {
+        guard !retryScheduled else { return }
+        retryScheduled = true
+        let delay = min(5.0, 0.1 * pow(2, Double(retryAttempt)))
+        retryAttempt += 1
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            await self?.retryTimerFired()
+        }
+    }
+
+    private func retryTimerFired() {
+        retryScheduled = false
+        retryPending()
     }
 
     /// § 3: a member that ended within 5 s of a thaw marks the bundle `freezeUnsafe`.
@@ -561,8 +670,12 @@ public actor Governor: Governing {
     @discardableResult
     private func removeECore(root: Int32, reason: ThawReason) -> Bool {
         do {
-            guard let g = try lane.remove(root: root, reason: reason, journal: journal) else { return false }
-            continuation.yield(.eCoreRemoved(group: g.id, reason: reason))
+            guard let (g, unresolved) = try lane.remove(root: root, reason: reason, journal: journal) else { return false }
+            if unresolved.isEmpty {
+                continuation.yield(.eCoreRemoved(group: g.id, reason: reason))
+            } else {
+                keepPending(PendingUndo(kind: .eCore, id: g.id, members: unresolved, reason: reason))
+            }
         } catch {
             disableEffects()
         }

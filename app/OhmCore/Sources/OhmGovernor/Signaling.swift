@@ -13,6 +13,8 @@ public protocol ProcessSignaling: AnyObject {
     /// PRIO_DARWIN_BG on/off. Returns 0 or errno.
     func setBackground(_ pid: Int32, _ on: Bool) -> Int32
     func isStopped(_ pid: Int32) -> Bool
+    /// "gone" vs "could not tell" matters for undoing effects (T-024 #1).
+    func identityStatus(_ id: ProcessIdentity) -> ProcessProbe.IdentityStatus
 }
 
 extension ProcessSignaling {
@@ -32,12 +34,14 @@ public final class DarwinSignaler: ProcessSignaling {
         return setpriority(PRIO_DARWIN_PROCESS, id_t(pid), on ? PRIO_DARWIN_BG : 0) == 0 ? 0 : errno
     }
     public func isStopped(_ pid: Int32) -> Bool { ProcessProbe.isStopped(pid) }
+    public func identityStatus(_ id: ProcessIdentity) -> ProcessProbe.IdentityStatus { ProcessProbe.identityStatus(id) }
 }
 
 /// Swift face of the async-signal-safe C table (ADR 0004 § 7).
 public enum ThawTable {
     public static let capacity = Int(OHM_THAW_TABLE_CAPACITY)
-    public static func add(_ pid: Int32) -> Bool { ohm_thaw_table_add(pid) == 0 }
+    /// The handler re-verifies (pid, start) before SIGCONT (D3, T-024 #6).
+    public static func add(_ id: ProcessIdentity) -> Bool { ohm_thaw_table_add(id.pid, id.startAbsTime) == 0 }
     public static func remove(_ pid: Int32) { ohm_thaw_table_remove(pid) }
     public static func contains(_ pid: Int32) -> Bool { ohm_thaw_table_contains(pid) != 0 }
     public static var count: Int { Int(ohm_thaw_table_count()) }

@@ -16,6 +16,30 @@ public enum ProcessProbe {
         return rc == 0 ? ri.ri_proc_start_abstime : nil
     }
 
+    public enum IdentityStatus: Sendable, Equatable {
+        case match
+        /// The process no longer exists (ESRCH): nothing left to undo.
+        case gone
+        /// The pid now belongs to another process: never ours to signal (D3).
+        case mismatch
+        /// The kernel could not tell (EPERM, …): unresolved, retry later.
+        case unknown(Int32)
+    }
+
+    /// Distinguishes "definitely gone" from "could not measure" (T-024 #1).
+    public static func identityStatus(_ id: ProcessIdentity) -> IdentityStatus {
+        guard id.pid > 1 else { return .mismatch }
+        var ri = rusage_info_v6()
+        let rc = withUnsafeMutablePointer(to: &ri) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(id.pid, RUSAGE_INFO_V6, $0)
+            }
+        }
+        if rc == 0 { return ri.ri_proc_start_abstime == id.startAbsTime ? .match : .mismatch }
+        let e = errno
+        return e == ESRCH ? .gone : .unknown(e)
+    }
+
     public static func identity(of pid: Int32) -> ProcessIdentity? {
         startAbs(pid).map { ProcessIdentity(pid: pid, startAbsTime: $0) }
     }
@@ -76,10 +100,13 @@ public enum ProcessProbe {
         return Array(pids.prefix(Int(n))).filter { $0 > 0 }
     }
 
-    public static func childPids(_ pid: Int32) -> [Int32] {
+    public static func childPids(_ pid: Int32) -> [Int32] { childPidsIfReadable(pid) ?? [] }
+
+    /// nil when the kernel call failed (as opposed to "no children").
+    public static func childPidsIfReadable(_ pid: Int32) -> [Int32]? {
         var pids = [Int32](repeating: 0, count: 512)
         let n = pids.withUnsafeMutableBytes { proc_listchildpids(pid, $0.baseAddress, Int32($0.count)) }
-        guard n > 0 else { return [] }
+        guard n >= 0 else { return nil }
         return Array(pids.prefix(Int(n))).filter { $0 > 0 }
     }
 

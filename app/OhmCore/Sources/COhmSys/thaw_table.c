@@ -2,25 +2,33 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <libproc.h>
 #include <signal.h>
 #include <stdatomic.h>
-#include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 
-static _Atomic int32_t ohm_slots[OHM_THAW_TABLE_CAPACITY];
-static struct sigaction ohm_prev[NSIG];
+// Slot states: 0 free, -1 being written/cleared, > 1 active pid. The start time is published before
+// the pid, so a reader that sees an active pid either sees its start or (during a concurrent
+// remove/reuse) a mismatching value, which only makes the handler skip: the watcher then thaws.
+static _Atomic int32_t ohm_pids[OHM_THAW_TABLE_CAPACITY];
+static _Atomic uint64_t ohm_starts[OHM_THAW_TABLE_CAPACITY];
 static _Atomic int ohm_installed = 0;
 
 static const int ohm_signals[] = {
     SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGABRT, SIGFPE,
 };
 
-int ohm_thaw_table_add(pid_t pid) {
-    if (pid <= 1) return -1;
+int ohm_thaw_table_add(pid_t pid, uint64_t start_abstime) {
+    if (pid <= 1 || start_abstime == 0) return -1;
     if (ohm_thaw_table_contains(pid)) return 0;
     for (int i = 0; i < OHM_THAW_TABLE_CAPACITY; i++) {
         int32_t expected = 0;
-        if (atomic_compare_exchange_strong(&ohm_slots[i], &expected, (int32_t)pid)) return 0;
+        if (atomic_compare_exchange_strong(&ohm_pids[i], &expected, -1)) {
+            atomic_store(&ohm_starts[i], start_abstime);
+            atomic_store(&ohm_pids[i], (int32_t)pid);
+            return 0;
+        }
     }
     return -1;
 }
@@ -29,14 +37,18 @@ int ohm_thaw_table_remove(pid_t pid) {
     int removed = 0;
     for (int i = 0; i < OHM_THAW_TABLE_CAPACITY; i++) {
         int32_t expected = (int32_t)pid;
-        if (atomic_compare_exchange_strong(&ohm_slots[i], &expected, 0)) removed = 1;
+        if (atomic_compare_exchange_strong(&ohm_pids[i], &expected, -1)) {
+            atomic_store(&ohm_starts[i], 0);
+            atomic_store(&ohm_pids[i], 0);
+            removed = 1;
+        }
     }
     return removed;
 }
 
 int ohm_thaw_table_contains(pid_t pid) {
     for (int i = 0; i < OHM_THAW_TABLE_CAPACITY; i++) {
-        if (atomic_load(&ohm_slots[i]) == (int32_t)pid) return 1;
+        if (atomic_load(&ohm_pids[i]) == (int32_t)pid) return 1;
     }
     return 0;
 }
@@ -44,40 +56,36 @@ int ohm_thaw_table_contains(pid_t pid) {
 int ohm_thaw_table_count(void) {
     int n = 0;
     for (int i = 0; i < OHM_THAW_TABLE_CAPACITY; i++) {
-        if (atomic_load(&ohm_slots[i]) > 0) n++;
+        if (atomic_load(&ohm_pids[i]) != 0) n++;
     }
     return n;
 }
 
-// Async-signal-safe: only atomic loads and kill(2).
-int ohm_thaw_table_thaw_all(void) {
+// Async-signal-safe: atomic loads, proc_pid_rusage (register moves + tail call into the
+// __proc_info syscall stub, verified by disassembly on macOS 27) and kill(2). No locks, no malloc.
+int ohm_thaw_table_thaw_verified(void) {
     int n = 0;
     for (int i = 0; i < OHM_THAW_TABLE_CAPACITY; i++) {
-        int32_t pid = atomic_load(&ohm_slots[i]);
-        if (pid > 1) {
-            kill((pid_t)pid, SIGCONT);
-            n++;
-        }
+        int32_t pid = atomic_load(&ohm_pids[i]);
+        if (pid <= 1) continue;
+        uint64_t start = atomic_load(&ohm_starts[i]);
+        if (start == 0) continue;
+        struct rusage_info_v0 ri;
+        if (proc_pid_rusage(pid, RUSAGE_INFO_V0, (rusage_info_t *)&ri) != 0) continue;
+        if (ri.ri_proc_start_abstime != start) continue;   // pid reused: not ours (D3)
+        kill((pid_t)pid, SIGCONT);
+        n++;
     }
     return n;
 }
 
 static void ohm_handler(int sig, siginfo_t *info, void *ctx) {
+    (void)info;
+    (void)ctx;
     int saved_errno = errno;
-    ohm_thaw_table_thaw_all();
-
-    // Chain whatever was installed before us (crash reporters, runtime backtracers).
-    if (sig > 0 && sig < NSIG) {
-        struct sigaction *p = &ohm_prev[sig];
-        if (p->sa_flags & SA_SIGINFO) {
-            if (p->sa_sigaction != NULL) p->sa_sigaction(sig, info, ctx);
-        } else if (p->sa_handler != SIG_DFL && p->sa_handler != SIG_IGN && p->sa_handler != NULL) {
-            p->sa_handler(sig);
-        }
-    }
-
-    // Re-raise with the default action. The signal is blocked while we run, so it is delivered
-    // (and terminates the process) as soon as the handler returns.
+    ohm_thaw_table_thaw_verified();
+    // No chaining: restore the default action and re-raise. The signal is blocked while we run,
+    // so it is delivered (and terminates the process) as soon as the handler returns.
     struct sigaction dfl;
     memset(&dfl, 0, sizeof dfl);
     dfl.sa_handler = SIG_DFL;
@@ -101,13 +109,12 @@ int ohm_thaw_table_install_handlers(void) {
 
     int rc = 0;
     for (size_t i = 0; i < sizeof ohm_signals / sizeof ohm_signals[0]; i++) {
-        int sig = ohm_signals[i];
         struct sigaction sa;
         memset(&sa, 0, sizeof sa);
         sa.sa_sigaction = ohm_handler;
         sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
         sigemptyset(&sa.sa_mask);
-        if (sigaction(sig, &sa, &ohm_prev[sig]) != 0) rc = -1;
+        if (sigaction(ohm_signals[i], &sa, NULL) != 0) rc = -1;
     }
     return rc;
 }

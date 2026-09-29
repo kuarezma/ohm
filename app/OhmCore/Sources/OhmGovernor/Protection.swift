@@ -7,13 +7,17 @@ import ServiceManagement
 /// ADR 0004 § 6 protection modes. Freeze and E-core need `isReady()` (part of D1 / admissible()).
 public protocol ProtectionProviding: AnyObject {
     var mode: ProtectionMode { get }
-    /// Chooses a mode (launchAgent → spawnedWatcher → none) and starts what it needs.
+    /// Chooses a mode (launchAgent → spawnedWatcher → none) and starts what it needs. Never waits:
+    /// the Governor confirms readiness without blocking its queue (T-024 #5).
     func activate() -> ProtectionMode
     func isReady() -> Bool
     /// Pid of the spawned watcher child, if any (the Governor watches it for exit).
     var spawnedPid: Int32? { get }
-    /// The spawned child died: restart it. Returns the new mode (`.none` if restart failed).
+    /// The spawned child died: restart it (without waiting). Returns the new mode (`.none` if the
+    /// restart failed).
     func watcherDied() -> ProtectionMode
+    /// The watcher never became ready: stop anything started; mode becomes `.none`.
+    func abandon()
 }
 
 public final class WatcherProtection: ProtectionProviding {
@@ -39,7 +43,8 @@ public final class WatcherProtection: ProtectionProviding {
     }
 
     public func activate() -> ProtectionMode {
-        if useLaunchAgent, SMAppService.agent(plistName: plistName).status == .enabled {
+        if useLaunchAgent, SMAppService.agent(plistName: plistName).status == .enabled,
+           FileLock.isHeldByAnother(path: paths.thawdLock) {
             mode = .launchAgent
             return mode
         }
@@ -72,7 +77,7 @@ public final class WatcherProtection: ProtectionProviding {
 
     /// posix_spawn with POSIX_SPAWN_SETSID (own session: no process-group signals from Ohm's group)
     /// and POSIX_SPAWN_CLOEXEC_DEFAULT (no inherited descriptor can keep owner.lock alive, § 6).
-    /// Waits up to 2 s for the child to take `thawd.lock`.
+    /// Does not wait for `thawd.lock`; readiness is confirmed by the Governor.
     private func spawn() -> Bool {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
@@ -97,12 +102,17 @@ public final class WatcherProtection: ProtectionProviding {
         guard posix_spawn(&pid, executable, &actions, &attr, argv, environ) == 0 else { return false }
         spawnedPid = pid
         spawnedIdentity = ProcessProbe.identity(of: pid)
-        let deadline = Date().addingTimeInterval(2)
-        while Date() < deadline {
-            if FileLock.isHeldByAnother(path: paths.thawdLock) { break }
-            usleep(10_000)
-        }
         return true
+    }
+
+    public func abandon() {
+        if let id = spawnedIdentity, ProcessProbe.matches(id) {
+            kill(id.pid, SIGKILL)
+            _ = waitpid(id.pid, nil, 0)
+        }
+        spawnedPid = nil
+        spawnedIdentity = nil
+        mode = .none
     }
 
     /// Only when the journal is empty and both features are off (§ 6 "Kayıt ömrü").

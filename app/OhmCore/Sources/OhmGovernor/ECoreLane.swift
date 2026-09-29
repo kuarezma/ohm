@@ -52,13 +52,30 @@ final class ECoreLane {
         groups[root] = g
     }
 
-    /// Removes the policy from every verified member, then writes `ecoreOff`.
-    @discardableResult
-    func remove(root: Int32, reason: ThawReason, journal: (any FreezeJournaling)?) throws -> ECoreGroup? {
+    /// Removes the policy from every verified member. `ecoreOff` is written only when every member
+    /// is resolved; the unresolved ones are returned for the Governor to retry (T-024 #1).
+    func remove(root: Int32, reason: ThawReason, journal: (any FreezeJournaling)?) throws
+        -> (group: ECoreGroup, unresolved: [ProcessIdentity])? {
         guard let g = groups.removeValue(forKey: root) else { return nil }
-        for p in g.pids.reversed() where signaler.matches(p) { _ = signaler.setBackground(p.pid, false) }
-        try journal?.append(JournalRecord(op: .ecoreOff, group: g.id, reason: reason.rawValue), sync: false)
-        return g
+        let unresolved = try finish(g.id, ordered: g.pids.reversed(), reason: reason, journal: journal)
+        return (g, unresolved)
+    }
+
+    func finish(_ id: UUID, ordered: [ProcessIdentity], reason: ThawReason, journal: (any FreezeJournaling)?) throws -> [ProcessIdentity] {
+        var unresolved: [ProcessIdentity] = []
+        for p in ordered {
+            switch signaler.identityStatus(p) {
+            case .gone, .mismatch: continue
+            case .unknown: unresolved.append(p)
+            case .match:
+                let rc = signaler.setBackground(p.pid, false)
+                if rc != 0 && rc != ESRCH { unresolved.append(p) }
+            }
+        }
+        if unresolved.isEmpty {
+            try journal?.append(JournalRecord(op: .ecoreOff, group: id, reason: reason.rawValue), sync: false)
+        }
+        return unresolved
     }
 
     func dropMember(_ pid: Int32) {

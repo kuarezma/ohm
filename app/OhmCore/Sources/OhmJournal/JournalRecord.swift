@@ -81,6 +81,8 @@ public enum JournalError: Error, Equatable {
     case encode
     case recordTooLarge(Int)
     case injected
+    case unterminatedTail
+    case rewriteFailed
 }
 
 /// Parsed journal (ADR 0004 § 5 reading rules 3 and 4).

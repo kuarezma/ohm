@@ -218,22 +218,26 @@ final class FakeProtection: ProtectionProviding {
     func activate() -> ProtectionMode { mode }
     func isReady() -> Bool { s.ready.load(ordering: .sequentiallyConsistent) }
     func watcherDied() -> ProtectionMode { mode }
+    func abandon() { mode = .none }
 }
 
 final class ProbeState: Sendable {
     let audio = Mutex<Set<Int32>>([])
     let camera = Atomic<Bool>(false)
+    /// Probes that report "could not measure" (T-024 #7).
+    let failing = Mutex<Set<String>>([])
 }
 
 final class FakeProbes: SafetyProbing {
     let s: ProbeState
     init(_ s: ProbeState) { self.s = s }
-    func audioActive(pid: Int32) -> Bool { s.audio.withLock { $0.contains(pid) } }
-    func cameraInUse() -> Bool { s.camera.load(ordering: .sequentiallyConsistent) }
-    func assertionHolders() -> Set<Int32> { [] }
-    func eventTapOwners() -> Set<Int32> { [] }
-    func isTraced(pid: Int32) -> Bool { false }
-    func outOfBundleChildren(pid: Int32, bundlePath: String) -> [Int32] { [] }
+    private func fails(_ k: String) -> Bool { s.failing.withLock { $0.contains(k) } }
+    func audioActive(pid: Int32) -> Bool? { fails("audio") ? nil : s.audio.withLock { $0.contains(pid) } }
+    func cameraInUse() -> Bool? { fails("camera") ? nil : s.camera.load(ordering: .sequentiallyConsistent) }
+    func assertionHolders() -> Set<Int32>? { fails("assertions") ? nil : [] }
+    func eventTapOwners() -> Set<Int32>? { fails("taps") ? nil : [] }
+    func isTraced(pid: Int32) -> Bool? { fails("traced") ? nil : false }
+    func outOfBundleChildren(pid: Int32, bundlePath: String) -> [Int32]? { fails("children") ? nil : [] }
 }
 
 struct SignalRecord: Sendable, Equatable {
@@ -247,6 +251,14 @@ final class SignalLog: Sendable {
     /// pids for which `isStopped` reports false until `stallUntilNs`.
     let stall = Mutex<(Set<Int32>, UInt64)>(([], 0))
     let afterStop = Mutex<(@Sendable (Int32) -> Void)?>(nil)
+    /// SIGCONT to these pids fails with the given errno and is not sent (T-024 #1).
+    let contFail = Mutex<[Int32: Int32]>([:])
+    /// setBackground(pid, on) calls that succeeded.
+    let background = Mutex<[(Int32, Bool)]>([])
+    /// setBackground(pid, false) fails with EPERM for these pids (T-024 #1).
+    let bgOffFail = Mutex<Set<Int32>>([])
+    /// identityStatus reports "could not tell" for these pids (T-024 #1).
+    let identityUnknown = Mutex<Set<Int32>>([])
 
     func all() -> [SignalRecord] { records.withLock { $0 } }
     func sent(_ sig: Int32) -> [Int32] { all().filter { $0.sig == sig }.map(\.pid) }
@@ -259,12 +271,22 @@ final class RecordingSignaler: ProcessSignaling {
     init(_ log: SignalLog) { self.log = log }
     func startAbs(_ pid: Int32) -> UInt64? { real.startAbs(pid) }
     func send(_ pid: Int32, _ sig: Int32) -> Int32 {
+        if sig == SIGCONT, let e = log.contFail.withLock({ $0[pid] }) { return e }
         let rc = real.send(pid, sig)
         log.records.withLock { $0.append(SignalRecord(pid: pid, sig: sig, ns: nowNs())) }
         if sig == SIGSTOP, let hook = log.afterStop.withLock({ $0 }) { hook(pid) }
         return rc
     }
-    func setBackground(_ pid: Int32, _ on: Bool) -> Int32 { real.setBackground(pid, on) }
+    func setBackground(_ pid: Int32, _ on: Bool) -> Int32 {
+        if !on, log.bgOffFail.withLock({ $0.contains(pid) }) { return EPERM }
+        let rc = real.setBackground(pid, on)
+        if rc == 0 { log.background.withLock { $0.append((pid, on)) } }
+        return rc
+    }
+    func identityStatus(_ id: ProcessIdentity) -> ProcessProbe.IdentityStatus {
+        if log.identityUnknown.withLock({ $0.contains(id.pid) }) { return .unknown(EPERM) }
+        return real.identityStatus(id)
+    }
     func isStopped(_ pid: Int32) -> Bool {
         let (set, until) = log.stall.withLock { $0 }
         if set.contains(pid), nowNs() < until { return false }
@@ -307,7 +329,7 @@ final class FaultyJournal: FreezeJournaling {
         if from > 0, n >= from { throw JournalError.injected }
         try inner.append(record, sync: sync)
     }
-    func compactIfIdle() { inner.compactIfIdle() }
+    func compactIfIdle() throws { try inner.compactIfIdle() }
 }
 
 func appInfo(_ pid: Int32, bundleID: String = "dev.ohmtest.fake", bundle: String? = nil,

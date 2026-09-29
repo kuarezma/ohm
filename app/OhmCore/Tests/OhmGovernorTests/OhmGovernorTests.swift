@@ -283,10 +283,10 @@ struct OhmGovernorTests {
         let wav = rig.dir + "/silence.wav"
         FileManager.default.createFile(atPath: wav, contents: silentWAV(seconds: 20))
         let afplay = bag.spawn("/usr/bin/afplay", ["-v", "0", wav])
-        let audioSeen = waitUntil(5) { SystemSafetyProbes().audioActive(pid: afplay) }
+        let audioSeen = waitUntil(5) { SystemSafetyProbes().audioActive(pid: afplay) == true }
         // Power assertion.
         let caff = bag.spawn("/usr/bin/caffeinate", ["-i", "-t", "60"])
-        _ = waitUntil(3) { SystemSafetyProbes().assertionHolders().contains(caff) }
+        _ = waitUntil(3) { SystemSafetyProbes().assertionHolders()?.contains(caff) == true }
         // Event tap.
         let tapLog = rig.dir + "/tap.log"
         let tap = bag.spawn(hostPath, ["eventtap"], log: tapLog)
