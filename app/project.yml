@@ -4,15 +4,15 @@ options:
   deploymentTarget:
     macOS: "26.0"
 
+configFiles:
+  Debug: Signing.xcconfig
+  Release: Signing.xcconfig
+
 settings:
   base:
     CODE_SIGN_STYLE: Automatic
-    DEVELOPMENT_TEAM: ""
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     SWIFT_VERSION: "6.0"
-  configs:
-    Debug:
-      CODE_SIGN_IDENTITY: "-"
 
 packages:
   OhmCore:
@@ -63,11 +63,12 @@ targets:
       - package: OhmCore
         product: OhmControl
       - target: OhmWidget
-      - target: ohm
+      - target: ohm-cli
         embed: true
         link: false
         copy:
-          destination: executables
+          destination: wrapper
+          subpath: Contents/Helpers
       - target: ohm-thawd
         embed: true
         link: false
@@ -102,7 +103,7 @@ targets:
       - package: OhmCore
         product: OhmLedger
 
-  ohm:
+  ohm-cli:
     type: tool
     platform: macOS
     deploymentTarget: "26.0"

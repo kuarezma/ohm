@@ -7,3 +7,4 @@ DerivedData/
 spikes/bin/
 .agy-staff/
 .claude/
+app/Local.xcconfig

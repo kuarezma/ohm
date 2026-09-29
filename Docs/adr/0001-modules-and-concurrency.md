@@ -39,7 +39,7 @@ Ohm; menü çubuğu uygulaması, widget, `ohm` CLI ve dondurma güvenliği için
 |---|---|---|---|
 | `OhmApp` | Xcode app, sandbox'sız, Developer ID | Hepsi | Kompozisyon kökü |
 | `OhmWidget` | WidgetKit uzantısı, sandbox'lı | `OhmModel`, `OhmLedger` (yalnız `LedgerReader`) | Özel API ve sinyal kodu widget'a girmez |
-| `ohm-cli` | Komut satırı, `Ohm.app/Contents/MacOS/ohm` | `OhmModel`, `OhmLedger` (okuyucu), `OhmControl`, `OhmJournal` (acil `thaw --all`) | Canlı değişiklikler uygulama üzerinden geçer |
+| `ohm-cli` | Komut satırı, `Ohm.app/Contents/Helpers/ohm` (`Contents/MacOS/Ohm` ile harf duyarsız APFS'te çakıştığı için `MacOS/` altında olamaz) | `OhmModel`, `OhmLedger` (okuyucu), `OhmControl`, `OhmJournal` (acil `thaw --all`) | Canlı değişiklikler uygulama üzerinden geçer |
 | `ohm-thawd` | `Ohm.app/Contents/MacOS/ohm-thawd`; LaunchAgent (`launchAgent` modu) veya Ohm'un `posix_spawn` ile başlattığı süreç (`spawnedWatcher` modu) | `OhmJournal`, `COhmSys` | ADR 0004'teki izleyici; mümkün olan en küçük süreç |
 
 Kurallar:
