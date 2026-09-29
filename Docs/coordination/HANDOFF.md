@@ -1,4 +1,4 @@
-NEXT: **GPT-6.1 Sol medium (Codex) → T-030 Revizyon 2** (`../worktrees/t030-ui`, kart `.t030-rev2-card.md`); bitince şef kapısı. Sonra T-025 (Governor test 20 kararsızlığı), T-032.
+NEXT: **Şef → T-025 kapısı** (Sol medium, `../worktrees/t025-flaky`, sonuç `.t025-result.md`; kapıyı makine boşken tekrar koş) ve **T-001b bulgularını karara bağlama** (Sol high salt okunur). Sonra T-032 (Sol medium), T-061 (Gemini).
 
 - **2026-09-29 · Opus 5.5 (Claude Code, şef) — Tur 0.** Repo, `Docs/PLAN.md`, `ROLES.md`, `TASKS.md`, işaretçi dosyalar (CLAUDE/AGENTS/GEMINI.md) kuruldu. **Devir:** Dalga 1.
 
@@ -8,3 +8,5 @@ NEXT: **GPT-6.1 Sol medium (Codex) → T-030 Revizyon 2** (`../worktrees/t030-ui
 
 
 - **2026-09-29 · Şef — T-021/T-023 kapısı PASS.** İki dal birleştirildi (c69eac8, 04f4b4e). `COhmSys.h` çakışması iki taraf korunarak çözüldü; T-023'ün `Governing.swift` dosyası T-031'in `RuleTypes.swift` tiplerini yeniden tanımlıyordu, kopyalar kaldırıldı (43fcdb3). Kapı: `swift test` tümü yeşil (Governor 35 test), `xcodebuild` BUILD SUCCEEDED, paket içinde `Contents/MacOS/ohm-thawd` ve `Library/LaunchAgents/dev.ohm.thawd.plist` var. **P2:** Governor test 20 (watchdog) birleşik dalda yaklaşık 7 koşuda 1 kırmızı; 22a paralel yük altında bir kez düştü → T-025. **T-030 Rev 1 FAIL** (Gemini 2. kırmızı): onboarding'de yanlış CPU ölçüm iddiası, TR yüzde biçimi, İngilizce sabit VoiceOver etiketi; iş `t030-ui` dalına commit edildi (f9af2a2), Rev 2 Sol medium'a devredildi. Main'de T-030'un kopya dosyaları hâlâ duruyor (silme izni verilmedi).
+
+- **2026-09-29 · Şef — T-030 PASS** (Rev 2, GPT-6.1 Sol medium). Onboarding iddiaları PLAN §Özellikler 1-2'ye çekildi, TR `%62`, VoiceOver etiketleri yerelleştirildi, önizlemeler içerik boyutunda. Sol, Codex sandbox'ı yüzünden derleyemedi ve bunu raporladı; kapıyı şef koştu: `BUILD SUCCEEDED`. Merge ba9d345.
