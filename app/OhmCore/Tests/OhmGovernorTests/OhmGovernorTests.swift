@@ -40,11 +40,11 @@ func isFrozen(_ o: GovernorOutcome) -> Bool { if case .frozen = o { true } else 
 
 /// Fake bundle whose root is a copy of the host with one in-bundle helper child.
 func spawnFakeApp(_ bag: ProcessBag, dir: String, helperArgs: [String] = [], rootArgs: [String] = [],
-                  extraChild: String? = nil) -> (root: Int32, helper: Int32, bundle: String) {
+                  extraChild: String? = nil, log: String? = nil) -> (root: Int32, helper: Int32, bundle: String) {
     let (bundle, exe) = makeFakeBundle(dir)
     var args = ["app-root"] + rootArgs + ["--child", ([exe, "app-helper"] + helperArgs).joined(separator: " ")]
     if let extraChild { args += ["--child", extraChild] }
-    let root = bag.spawn(exe, args)
+    let root = bag.spawn(exe, args, log: log)
     var helper: Int32 = 0
     waitUntil(3) {
         let kids = ProcessProbe.childPids(root).filter { ProcessProbe.executablePath($0) == exe }
@@ -556,13 +556,31 @@ struct OhmGovernorTests {
 
     @Test("20: helper watchdog kills the helper after thaw → freezeUnsafe, next rule freeze .unsafeTopology")
     func t20_healthCheck() async throws {
+        try await checkHelperHealth(startupDelayMilliseconds: 0)
+    }
+
+    @Test("20 regression: delayed watchdog initialization still detects the frozen interval")
+    func t20_delayedHelperHealthCheck() async throws {
+        try await checkHelperHealth(startupDelayMilliseconds: 250)
+    }
+
+    private func checkHelperHealth(startupDelayMilliseconds: UInt32) async throws {
         let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty, "spawned processes survived teardown") }
         let rig = try Rig("t20", realTree: true) {
             $0.healthCheckDelay = 1.5
             $0.minHiddenFloor = 0
         }
         let hb = rig.dir + "/heartbeat"
-        let app = spawnFakeApp(bag, dir: rig.dir, helperArgs: ["--hb", hb], rootArgs: ["--hb", hb])
+        let ready = rig.dir + "/helper-ready"
+        let log = rig.dir + "/watchdog.log"
+        let app = spawnFakeApp(bag, dir: rig.dir,
+                               helperArgs: ["--hb", hb, "--ready", ready,
+                                            "--startup-delay-ms", "\(startupDelayMilliseconds)"],
+                               rootArgs: ["--hb", hb], log: log)
+        // A child pid can exist before main() initializes its watchdog. Do not freeze that state.
+        try #require(waitUntil(3) {
+            readLog(ready) == "ready" && FileManager.default.fileExists(atPath: hb)
+        }, "watchdog did not initialize: \(readLog(log))")
         let bundleID = "dev.ohmtest.watchdog"
         rig.apps.add(appInfo(app.root, bundleID: bundleID, bundle: app.bundle))
         #expect(isFrozen(await rig.freeze(app.root)))
@@ -574,7 +592,7 @@ struct OhmGovernorTests {
         let helperExited = waitUntil(1) {
             !ProcessProbe.isLive(ProcessIdentity(pid: app.helper, startAbsTime: helperStart))
         }
-        #expect(helperExited)
+        #expect(helperExited, "watchdog log: \(readLog(log))")
         var unsafe = false
         for _ in 0..<60 where !unsafe {
             try await Task.sleep(for: .milliseconds(100))
@@ -583,7 +601,8 @@ struct OhmGovernorTests {
         let key = AppKey.bundle(bundleID)
         let r = await rig.gov.reconcile(DesiredState(effects: [key: DesiredEffect(
             freeze: FreezeParams(minHiddenSeconds: 0), origins: [.freeze: [.rule(UUID())]])]))
-        print("T-023 test20: helper exited after thaw=\(helperExited); freezeUnsafe=\(unsafe); rule freeze → \(r.outcomes[key] ?? .notFound)")
+        let watchdogLog = readLog(log).split(separator: "\n").suffix(2).joined(separator: " | ")
+        print("T-023 test20: helper exited after thaw=\(helperExited); freezeUnsafe=\(unsafe); rule freeze → \(r.outcomes[key] ?? .notFound); startup delay=\(startupDelayMilliseconds) ms; watchdog log: \(watchdogLog)")
         #expect(unsafe)
         #expect(vetoes(r.outcomes[key] ?? .notFound).contains(.unsafeTopology))
         #expect(!isT(app.root))
