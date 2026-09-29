@@ -1,4 +1,5 @@
 NEXT: **Sol paralel:** T-026 (high, `../worktrees/t026-freeze-safety`), T-027 ve T-028 (medium, `t027-ledger`, `t028-rules`); kart `.card.md`, sonuç `.result.md`. Bitince şef kapısı (sandbox dışında test), T-026 için ek olarak `opus-high` kritik review. Sonra T-029 (T-027 sonrası), T-032, T-061.
+Pano: https://claude.ai/artifact/QGF58BzwKByWyg3HWaoLr6 (durum: `Docs/coordination/board.json` → şef aktarır)
 
 - **2026-09-29 · Opus 5.5 (Claude Code, şef) — Tur 0.** Repo, `Docs/PLAN.md`, `ROLES.md`, `TASKS.md`, işaretçi dosyalar (CLAUDE/AGENTS/GEMINI.md) kuruldu. **Devir:** Dalga 1.
 
