@@ -1,5 +1,7 @@
 # Roller — Ohm
 
+> **Model seçimi (29 Eyl 2026):** Bu dosyadaki model/efor atamaları tarihsel. Güncel seçim genel `route` kuralına tabidir (`~/.claude/skills/route/SKILL.md`, sayılar: `~/Desktop/model_görevleri/ROUTING.md`): kapılı kod GPT-6.1 Sol medium (Codex), zor kod Sol high → Opus 5.5 high, mimari Opus 5.5 high, tarama/doküman/UI Gemini 3.8 Flash high. Çelişkide genel kural geçerli; roller ve süreç (kapı, denetçi ayrılığı) bu dosyada kalır.
+
 Ölçüm temeli: `~/Desktop/model_görevleri/ROUTING.md` (28 Eyl 2026). Sayı buraya kopyalanmaz.
 Plan ve tam görev tablosu: `Docs/PLAN.md` § "Nasıl üretilecek".
 
