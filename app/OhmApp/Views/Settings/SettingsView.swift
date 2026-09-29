@@ -37,17 +37,18 @@ public struct SettingsView: View {
 // MARK: - General Settings
 
 struct GeneralSettingsView: View {
+    @Environment(\.locale) private var locale
     @Bindable var store: OhmStore
 
     var body: some View {
         Form {
             Section(header: Text(String(localized: "Sampling interval"))) {
                 LabeledContent(String(localized: "Active (popover open)")) {
-                    Text("1 s")
+                    Text(OhmFormatters.localizedString("1 s", locale: locale))
                         .foregroundColor(.secondary)
                 }
                 LabeledContent(String(localized: "Ambient (popover closed)")) {
-                    Text("10 s")
+                    Text(OhmFormatters.localizedString("10 s", locale: locale))
                         .foregroundColor(.secondary)
                 }
                 LabeledContent(String(localized: "Suspended (system sleep)")) {
@@ -67,7 +68,7 @@ struct GeneralSettingsView: View {
 
             Section {
                 Toggle(String(localized: "Launch at login"), isOn: $store.launchAtLogin)
-                    .accessibilityLabel("Toggle launch at login")
+                    .accessibilityLabel(OhmFormatters.localizedString("Toggle launch at login", locale: locale))
 
                 Button(String(localized: "Welcome Guide…")) {
                     store.showOnboarding = true
@@ -82,6 +83,7 @@ struct GeneralSettingsView: View {
 // MARK: - Rules Settings
 
 struct RulesSettingsView: View {
+    @Environment(\.locale) private var locale
     @Bindable var store: OhmStore
     @State private var newRuleText: String = ""
 
@@ -101,7 +103,7 @@ struct RulesSettingsView: View {
                             set: { _ in store.toggleRule(rule) }
                         ))
                         .labelsHidden()
-                        .accessibilityLabel("Toggle rule \(rule.name)")
+                        .accessibilityLabel(OhmFormatters.localizedFormat("Toggle rule %@", locale: locale, rule.name))
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(rule.name)
@@ -123,7 +125,7 @@ struct RulesSettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Delete rule \(rule.name)")
+                        .accessibilityLabel(OhmFormatters.localizedFormat("Delete rule %@", locale: locale, rule.name))
                     }
                     .padding(.vertical, 2)
                 }
@@ -134,7 +136,7 @@ struct RulesSettingsView: View {
                 TextField(String(localized: "Describe a rule…"), text: $newRuleText)
                     .textFieldStyle(.roundedBorder)
 
-                Button("Add") {
+                Button(OhmFormatters.localizedString("Add", locale: locale)) {
                     let trimmed = newRuleText.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
                     store.addRule(description: trimmed)
@@ -151,13 +153,13 @@ struct RulesSettingsView: View {
         let tint: Color
         switch action {
         case .eCore:
-            title = "E-core"
+            title = OhmFormatters.localizedString("E-core", locale: locale)
             tint = .blue
         case .freeze:
-            title = "Freeze"
+            title = OhmFormatters.localizedString("Freeze", locale: locale)
             tint = .cyan
         case .notify:
-            title = "Notify"
+            title = OhmFormatters.localizedString("Notify", locale: locale)
             tint = .orange
         }
 
@@ -173,15 +175,16 @@ struct RulesSettingsView: View {
 // MARK: - Never-Freeze Settings
 
 struct NeverFreezeSettingsView: View {
+    @Environment(\.locale) private var locale
     @Bindable var store: OhmStore
     @State private var newAppName: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Never-Freeze List")
+            Text(OhmFormatters.localizedString("Never-Freeze List", locale: locale))
                 .font(.headline)
 
-            Text("Applications in this list will never be frozen by Ohm, protecting ongoing audio, screen shares, and critical workers.")
+            Text(OhmFormatters.localizedString("Applications in this list will never be frozen by Ohm, protecting ongoing audio, screen shares, and critical workers.", locale: locale))
                 .font(.footnote)
                 .foregroundColor(.secondary)
 
@@ -199,17 +202,17 @@ struct NeverFreezeSettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Remove \(app) from never freeze list")
+                        .accessibilityLabel(OhmFormatters.localizedFormat("Remove %@ from never freeze list", locale: locale, app))
                     }
                 }
             }
             .listStyle(.inset(alternatesRowBackgrounds: true))
 
             HStack {
-                TextField("Add app name…", text: $newAppName)
+                TextField(OhmFormatters.localizedString("Add app name…", locale: locale), text: $newAppName)
                     .textFieldStyle(.roundedBorder)
 
-                Button("Add") {
+                Button(OhmFormatters.localizedString("Add", locale: locale)) {
                     let trimmed = newAppName.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
                     store.addNeverFreezeApp(trimmed)
@@ -225,6 +228,7 @@ struct NeverFreezeSettingsView: View {
 // MARK: - About Settings
 
 struct AboutSettingsView: View {
+    @Environment(\.locale) private var locale
     var body: some View {
         VStack(spacing: 12) {
             Spacer()
@@ -236,11 +240,11 @@ struct AboutSettingsView: View {
             Text("Ohm")
                 .font(.title.bold())
 
-            Text("Energy and core governor for Apple Silicon")
+            Text(OhmFormatters.localizedString("Energy and core governor for Apple Silicon", locale: locale))
                 .font(.subheadline)
                 .foregroundColor(.secondary)
 
-            Text("Version 0.0.1 (1)")
+            Text(OhmFormatters.localizedString("Version 0.0.1 (1)", locale: locale))
                 .font(.footnote)
                 .foregroundColor(.secondary)
 
@@ -248,7 +252,7 @@ struct AboutSettingsView: View {
                 .frame(width: 240)
 
             VStack(spacing: 4) {
-                Text("MIT License · Open Source")
+                Text(OhmFormatters.localizedString("MIT License · Open Source", locale: locale))
                     .font(.footnote)
                     .foregroundColor(.secondary)
 
@@ -256,7 +260,7 @@ struct AboutSettingsView: View {
                     .font(.footnote)
             }
 
-            Text("100% on-device telemetry. Zero background wakeups.")
+            Text(OhmFormatters.localizedString("Telemetry stays on your Mac.", locale: locale))
                 .font(.caption2)
                 .foregroundColor(.secondary)
 

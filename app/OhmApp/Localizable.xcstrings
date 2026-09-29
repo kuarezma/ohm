@@ -653,13 +653,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ohm measures CPU Performance and Efficiency cluster power, GPU draw, and battery discharge directly from Apple Silicon hardware sensors without root privileges. Every milliwatt is tracked and attributed to the exact applications consuming it."
+            "value" : "Ohm reads macOS process energy counters in joules without root access and shows battery minutes per app. Live system and GPU power are measured. CPU power is derived from process energy."
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ohm; CPU Performans ve Verimlilik küme gücünü, GPU çekimini ve pil deşarjını root yetkisi gerektirmeden doğrudan Apple Silicon donanım sensörlerinden ölçer. Her miliwatt izlenir ve tüketen uygulamalara tam olarak atfedilir."
+            "value" : "Ohm, macOS süreç enerji sayaçlarını root yetkisi olmadan joule olarak okur. Uygulama tüketimini pil dakikasıyla gösterir. Sistem ve GPU gücü canlı ölçülür. CPU gücü süreç enerjilerinden türetilir."
           }
         }
       }
@@ -670,13 +670,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Heavy background tasks can rapidly drain your battery. Ohm allows demoting background or hidden applications to your Mac's high-efficiency cores, saving up to 40% battery while keeping them running smoothly."
+            "value" : "Background tasks can drain your battery. Ohm can move background or hidden apps to efficiency cores to reduce energy use. Savings depend on the workload."
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ağır arka plan görevleri pilinizi hızla tüketebilir. Ohm, arka plandaki veya gizli uygulamaları Mac'inizin yüksek verimlilik çekirdeklerine (E-core) yönlendirerek pilden %40'a varan tasarruf sağlar."
+            "value" : "Arka plan görevleri pilinizi tüketebilir. Ohm, arka plandaki veya gizli uygulamaları verimlilik çekirdeklerine yönlendirebilir. Tasarruf miktarı yapılan işe bağlıdır."
           }
         }
       }
@@ -687,13 +687,591 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ohm can pause idle applications using UNIX signals and resume them in under 300 ms the moment you bring them to the front. To ensure safety (ADR 0004 § 6), a separate lightweight watcher helper (ohm-thawd) monitors Ohm. Even if Ohm crashes or is forcefully quit, the watcher immediately unfreezes every application."
+            "value" : "Ohm can pause eligible idle apps and resume them when brought to the front. A separate helper, ohm-thawd, watches Ohm and attempts to resume paused apps if Ohm stops."
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ohm, boştaki uygulamaları UNIX sinyalleriyle duraklatır ve ön plana aldığınız anda 300 ms altında çözer. Güvenlik için (ADR 0004 § 6), bağımsız bir izleyici yardımcı (ohm-thawd) Ohm'u izler; Ohm çökse veya zorla kapatılsa bile tüm uygulamaları anında çözer."
+            "value" : "Ohm, uygun boştaki uygulamaları duraklatabilir ve ön plana alındığında sürdürebilir. Bağımsız ohm-thawd yardımcısı Ohm’u izler. Ohm kapanırsa duraklatılmış uygulamaları sürdürmeye çalışır."
+          }
+        }
+      }
+    },
+    "%@ watts system power" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ watts system power"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sistem gücü %@ watt"
+          }
+        }
+      }
+    },
+    "%@ battery" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ battery"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ pil"
+          }
+        }
+      }
+    },
+    "%@ battery, charging" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ battery, charging"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ pil, şarj oluyor"
+          }
+        }
+      }
+    },
+    "%@ battery, %@ remaining" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ battery, %@ remaining"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ pil, %@ kaldı"
+          }
+        }
+      }
+    },
+    "Go to previous step" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Go to previous step"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Önceki adıma git"
+          }
+        }
+      }
+    },
+    "Go to next step" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Go to next step"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sonraki adıma git"
+          }
+        }
+      }
+    },
+    "Get Started with Ohm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Get Started with Ohm"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ohm’u kullanmaya başla"
+          }
+        }
+      }
+    },
+    "Step %lld of 3" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Step %lld of 3"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "3 adımdan %lld. adım"
+          }
+        }
+      }
+    },
+    "Move %@ to efficiency cores" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Move %@ to efficiency cores"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ uygulamasını verimlilik çekirdeklerine yönlendir"
+          }
+        }
+      }
+    },
+    "Remove %@ from efficiency cores" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove %@ from efficiency cores"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ uygulamasını verimlilik çekirdeklerinden çıkar"
+          }
+        }
+      }
+    },
+    "Freeze %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Freeze %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ uygulamasını dondur"
+          }
+        }
+      }
+    },
+    "Unfreeze %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unfreeze %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ uygulamasını sürdür"
+          }
+        }
+      }
+    },
+    "Quit %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quit %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ uygulamasını kapat"
+          }
+        }
+      }
+    },
+    "%lld active rules, click to open settings" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld active rules, click to open settings"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld etkin kural, ayarları açmak için tıklayın"
+          }
+        }
+      }
+    },
+    "Add rule" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add rule"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kural ekle"
+          }
+        }
+      }
+    },
+    "Performance cores at %@, efficiency cores at %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Performance cores at %@, efficiency cores at %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Performans çekirdekleri %@, verimlilik çekirdekleri %@"
+          }
+        }
+      }
+    },
+    "Ohm: %@ watts, %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ohm: %@ watts, %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ohm: %@ watt, %@"
+          }
+        }
+      }
+    },
+    "Toggle launch at login" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toggle launch at login"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oturum açılışında başlatmayı değiştir"
+          }
+        }
+      }
+    },
+    "Toggle rule %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toggle rule %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ kuralının etkinliğini değiştir"
+          }
+        }
+      }
+    },
+    "Delete rule %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete rule %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ kuralını sil"
+          }
+        }
+      }
+    },
+    "Remove %@ from never freeze list" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove %@ from never freeze list"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ uygulamasını dondurulmayacaklar listesinden çıkar"
+          }
+        }
+      }
+    },
+    "1 s" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 s"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 sn"
+          }
+        }
+      }
+    },
+    "10 s" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "10 s"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "10 sn"
+          }
+        }
+      }
+    },
+    "Never-Freeze List" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Never-Freeze List"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dondurulmayacaklar listesi"
+          }
+        }
+      }
+    },
+    "Applications in this list will never be frozen by Ohm, protecting ongoing audio, screen shares, and critical workers." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applications in this list will never be frozen by Ohm, protecting ongoing audio, screen shares, and critical workers."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ohm bu listedeki uygulamaları dondurmaz. Devam eden ses, ekran paylaşımı ve kritik işlemler korunur."
+          }
+        }
+      }
+    },
+    "Energy and core governor for Apple Silicon" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Energy and core governor for Apple Silicon"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple Silicon için enerji ve çekirdek yöneticisi"
+          }
+        }
+      }
+    },
+    "Version 0.0.1 (1)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version 0.0.1 (1)"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sürüm 0.0.1 (1)"
+          }
+        }
+      }
+    },
+    "MIT License · Open Source" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MIT License · Open Source"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MIT Lisansı · Açık Kaynak"
+          }
+        }
+      }
+    },
+    "Telemetry stays on your Mac." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Telemetry stays on your Mac."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ölçüm verileri Mac’inizde kalır."
+          }
+        }
+      }
+    },
+    "Add app name…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add app name…"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uygulama adı ekle…"
+          }
+        }
+      }
+    },
+    "Add" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ekle"
+          }
+        }
+      }
+    },
+    "E-core" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "E-core"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "E-core"
+          }
+        }
+      }
+    },
+    "Notify" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notify"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bildir"
+          }
+        }
+      }
+    },
+    "%@ of battery" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ of battery"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ pil"
           }
         }
       }

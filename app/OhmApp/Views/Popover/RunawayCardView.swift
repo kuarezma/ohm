@@ -48,7 +48,7 @@ public struct RunawayCardView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .accessibilityLabel("Move \(runaway.name) to efficiency cores")
+                .accessibilityLabel(OhmFormatters.localizedFormat("Move %@ to efficiency cores", locale: locale, runaway.name))
 
                 Button(action: {
                     store.freezeRunaway()
@@ -58,7 +58,7 @@ public struct RunawayCardView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .accessibilityLabel("Freeze \(runaway.name)")
+                .accessibilityLabel(OhmFormatters.localizedFormat("Freeze %@", locale: locale, runaway.name))
 
                 Button(role: .destructive, action: {
                     store.quitRunaway()
@@ -68,7 +68,7 @@ public struct RunawayCardView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .accessibilityLabel("Quit \(runaway.name)")
+                .accessibilityLabel(OhmFormatters.localizedFormat("Quit %@", locale: locale, runaway.name))
             }
         }
         .padding(10)

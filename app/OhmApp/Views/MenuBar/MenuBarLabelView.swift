@@ -3,6 +3,7 @@ import OhmModel
 
 public struct MenuBarLabelView: View {
     @Bindable var store: OhmStore
+    @Environment(\.locale) private var locale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(store: OhmStore) {
@@ -28,10 +29,10 @@ public struct MenuBarLabelView: View {
 
     private var thermalName: String {
         switch store.thermalLevel {
-        case .nominal: return String(localized: "Thermal state: Nominal")
-        case .fair: return String(localized: "Thermal state: Fair")
-        case .serious: return String(localized: "Thermal state: Serious")
-        case .critical: return String(localized: "Thermal state: Critical")
+        case .nominal: return OhmFormatters.localizedString("Thermal state: Nominal", locale: locale)
+        case .fair: return OhmFormatters.localizedString("Thermal state: Fair", locale: locale)
+        case .serious: return OhmFormatters.localizedString("Thermal state: Serious", locale: locale)
+        case .critical: return OhmFormatters.localizedString("Thermal state: Critical", locale: locale)
         }
     }
 
@@ -53,7 +54,7 @@ public struct MenuBarLabelView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Ohm: \(String(format: "%.1f", liveWatts)) W, \(thermalName)")
+        .accessibilityLabel(OhmFormatters.localizedFormat("Ohm: %@ watts, %@", locale: locale, liveWatts.formatted(.number.precision(.fractionLength(1)).locale(locale)), thermalName))
     }
 
     private var wattRing: some View {

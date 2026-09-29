@@ -28,11 +28,7 @@ public enum OhmFormatters {
     /// Formats battery accessibility string: wide style ("38 dakika pil" in TR, "38 minutes of battery" in EN).
     public static func formatBatteryAccessibility(minutes: Double, locale: Locale) -> String {
         let wideDuration = formatAccessibilityDuration(minutes: minutes, locale: locale)
-        if locale.identifier.starts(with: "tr") {
-            return "\(wideDuration) pil"
-        } else {
-            return "\(wideDuration) of battery"
-        }
+        return localizedFormat("%@ of battery", locale: locale, wideDuration)
     }
 
     /// Formats CPU percentage according to locale (e.g. "%94" in TR, "94%" in EN).

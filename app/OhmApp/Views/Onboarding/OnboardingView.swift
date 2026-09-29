@@ -54,7 +54,7 @@ public struct OnboardingView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(.secondary)
-                    .accessibilityLabel("Go to previous step")
+                    .accessibilityLabel(OhmFormatters.localizedString("Go to previous step", locale: locale))
                 } else {
                     Spacer().frame(width: 48)
                 }
@@ -71,7 +71,7 @@ public struct OnboardingView: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Step \(currentStep + 1) of 3")
+                .accessibilityLabel(OhmFormatters.localizedFormat("Step %lld of 3", locale: locale, currentStep + 1))
 
                 Spacer()
 
@@ -81,14 +81,14 @@ public struct OnboardingView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
-                    .accessibilityLabel("Go to next step")
+                    .accessibilityLabel(OhmFormatters.localizedString("Go to next step", locale: locale))
                 } else {
                     Button(OhmFormatters.localizedString("Get Started", locale: locale)) {
                         onDismiss()
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
-                    .accessibilityLabel("Get Started with Ohm")
+                    .accessibilityLabel(OhmFormatters.localizedString("Get Started with Ohm", locale: locale))
                 }
             }
         }

@@ -16,167 +16,45 @@ public enum PreviewRenderer {
         let normalStore = OhmStore(dataSource: PreviewDataSource.normal)
         let runawayStore = OhmStore(dataSource: PreviewDataSource.runaway)
 
-        if let code = localeCode?.lowercased() {
+        let localeCodes = localeCode.map { [$0.lowercased().hasPrefix("tr") ? "tr" : "en"] } ?? ["tr", "en"]
+        for code in localeCodes {
             let locale = Locale(identifier: code)
-            let isTurkish = code.starts(with: "tr")
-
-            if isTurkish {
-                // 1. popover-light-tr.png
+            for colorScheme in [ColorScheme.light, .dark] {
+                let appearanceName = colorScheme == .light ? "light" : "dark"
                 render(
                     view: PopoverView(store: normalStore),
                     locale: locale,
-                    colorScheme: .light,
-                    size: CGSize(width: 360, height: 420),
-                    to: outputURL.appendingPathComponent("popover-light-tr.png")
-                )
-
-                // 2. popover-runaway-tr.png
-                render(
-                    view: PopoverView(store: runawayStore),
-                    locale: locale,
-                    colorScheme: .dark,
-                    size: CGSize(width: 360, height: 490),
-                    to: outputURL.appendingPathComponent("popover-runaway-tr.png")
-                )
-
-                // 3. onboarding-tr.png
-                render(
-                    view: OnboardingView(onDismiss: {}),
-                    locale: locale,
-                    colorScheme: .dark,
-                    size: CGSize(width: 480, height: 380),
-                    to: outputURL.appendingPathComponent("onboarding-tr.png")
-                )
-
-                // Compatibility files
-                render(
-                    view: PopoverView(store: normalStore),
-                    locale: locale,
-                    colorScheme: .dark,
-                    size: CGSize(width: 360, height: 420),
-                    to: outputURL.appendingPathComponent("popover-dark.png")
-                )
-                render(
-                    view: PopoverView(store: runawayStore),
-                    locale: locale,
-                    colorScheme: .dark,
-                    size: CGSize(width: 360, height: 490),
-                    to: outputURL.appendingPathComponent("popover-runaway.png")
-                )
-                render(
-                    view: OnboardingView(onDismiss: {}),
-                    locale: locale,
-                    colorScheme: .dark,
-                    size: CGSize(width: 480, height: 380),
-                    to: outputURL.appendingPathComponent("onboarding.png")
-                )
-            } else {
-                // 1. popover-light-en.png
-                render(
-                    view: PopoverView(store: normalStore),
-                    locale: locale,
-                    colorScheme: .light,
-                    size: CGSize(width: 360, height: 420),
-                    to: outputURL.appendingPathComponent("popover-light-en.png")
-                )
-
-                // 2. popover-dark-en.png
-                render(
-                    view: PopoverView(store: normalStore),
-                    locale: locale,
-                    colorScheme: .dark,
-                    size: CGSize(width: 360, height: 420),
-                    to: outputURL.appendingPathComponent("popover-dark-en.png")
-                )
-
-                // Compatibility file
-                render(
-                    view: PopoverView(store: normalStore),
-                    locale: locale,
-                    colorScheme: .light,
-                    size: CGSize(width: 360, height: 420),
-                    to: outputURL.appendingPathComponent("popover-light.png")
+                    colorScheme: colorScheme,
+                    to: outputURL.appendingPathComponent("popover-\(appearanceName)-\(code).png")
                 )
             }
-        } else {
-            // Render all variants (EN + TR) when no specific locale is provided
-            let enLocale = Locale(identifier: "en")
-            let trLocale = Locale(identifier: "tr")
-
-            // English variants
-            render(
-                view: PopoverView(store: normalStore),
-                locale: enLocale,
-                colorScheme: .light,
-                size: CGSize(width: 360, height: 420),
-                to: outputURL.appendingPathComponent("popover-light-en.png")
-            )
-
-            // Turkish variants
-            render(
-                view: PopoverView(store: normalStore),
-                locale: trLocale,
-                colorScheme: .light,
-                size: CGSize(width: 360, height: 420),
-                to: outputURL.appendingPathComponent("popover-light-tr.png")
-            )
             render(
                 view: PopoverView(store: runawayStore),
-                locale: trLocale,
+                locale: locale,
                 colorScheme: .dark,
-                size: CGSize(width: 360, height: 490),
-                to: outputURL.appendingPathComponent("popover-runaway-tr.png")
+                to: outputURL.appendingPathComponent("popover-runaway-\(code).png")
             )
             render(
                 view: OnboardingView(onDismiss: {}),
-                locale: trLocale,
+                locale: locale,
                 colorScheme: .dark,
-                size: CGSize(width: 480, height: 380),
-                to: outputURL.appendingPathComponent("onboarding-tr.png")
-            )
-
-            // Base filenames for general review
-            render(
-                view: PopoverView(store: normalStore),
-                locale: trLocale,
-                colorScheme: .light,
-                size: CGSize(width: 360, height: 420),
-                to: outputURL.appendingPathComponent("popover-light.png")
-            )
-            render(
-                view: PopoverView(store: normalStore),
-                locale: trLocale,
-                colorScheme: .dark,
-                size: CGSize(width: 360, height: 420),
-                to: outputURL.appendingPathComponent("popover-dark.png")
-            )
-            render(
-                view: PopoverView(store: runawayStore),
-                locale: trLocale,
-                colorScheme: .dark,
-                size: CGSize(width: 360, height: 490),
-                to: outputURL.appendingPathComponent("popover-runaway.png")
-            )
-            render(
-                view: OnboardingView(onDismiss: {}),
-                locale: trLocale,
-                colorScheme: .dark,
-                size: CGSize(width: 480, height: 380),
-                to: outputURL.appendingPathComponent("onboarding.png")
+                to: outputURL.appendingPathComponent("onboarding-\(code).png")
             )
         }
 
         print("Rendered previews successfully to: \(outputURL.path)")
     }
 
-    private static func render<V: View>(view: V, locale: Locale, colorScheme: ColorScheme, size: CGSize, to fileURL: URL) {
+    private static func render<V: View>(view: V, locale: Locale, colorScheme: ColorScheme, to fileURL: URL) {
         let themedView = view
             .environment(\.locale, locale)
             .environment(\.colorScheme, colorScheme)
             .preferredColorScheme(colorScheme)
-            .frame(width: size.width, height: size.height)
+            .fixedSize(horizontal: false, vertical: true)
 
         let hostingView = NSHostingView(rootView: themedView)
+        // Use the view's content height rather than centering it in a fixed canvas.
+        let size = hostingView.fittingSize
         hostingView.frame = CGRect(origin: .zero, size: size)
 
         let window = NSWindow(

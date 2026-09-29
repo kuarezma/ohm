@@ -74,7 +74,7 @@ public struct ReceiptRowView: View {
                     )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isECoreActive ? "Remove \(row.displayName) from efficiency cores" : "Move \(row.displayName) to efficiency cores")
+            .accessibilityLabel(isECoreActive ? OhmFormatters.localizedFormat("Remove %@ from efficiency cores", locale: locale, row.displayName) : OhmFormatters.localizedFormat("Move %@ to efficiency cores", locale: locale, row.displayName))
 
             // [❄] Button
             Button(action: {
@@ -94,7 +94,7 @@ public struct ReceiptRowView: View {
                     )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isFrozen ? "Unfreeze \(row.displayName)" : "Freeze \(row.displayName)")
+            .accessibilityLabel(isFrozen ? OhmFormatters.localizedFormat("Unfreeze %@", locale: locale, row.displayName) : OhmFormatters.localizedFormat("Freeze %@", locale: locale, row.displayName))
         }
         .padding(.vertical, 2)
     }

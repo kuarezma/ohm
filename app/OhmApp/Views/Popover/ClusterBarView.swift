@@ -3,6 +3,7 @@ import OhmModel
 
 public struct ClusterBarView: View {
     public let residency: ClusterResidency
+    @Environment(\.locale) private var locale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(residency: ClusterResidency) {
@@ -16,7 +17,7 @@ public struct ClusterBarView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            "Performance cores at \(Int(residency.pActiveRatio * 100)) percent, Efficiency cores at \(Int(residency.eActiveRatio * 100)) percent"
+            OhmFormatters.localizedFormat("Performance cores at %@, efficiency cores at %@", locale: locale, OhmFormatters.formatPercent(residency.pActiveRatio * 100, locale: locale), OhmFormatters.formatPercent(residency.eActiveRatio * 100, locale: locale))
         )
     }
 

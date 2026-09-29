@@ -104,7 +104,7 @@ public struct PopoverView: View {
                 }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(activeRulesCount) active rules, click to open settings")
+            .accessibilityLabel(OhmFormatters.localizedFormat("%lld active rules, click to open settings", locale: locale, activeRulesCount))
 
             Spacer()
 
@@ -129,7 +129,7 @@ public struct PopoverView: View {
                                 .foregroundColor(.accentColor)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Add rule")
+                        .accessibilityLabel(OhmFormatters.localizedString("Add rule", locale: locale))
                     }
                 }
                 .padding(.horizontal, 8)

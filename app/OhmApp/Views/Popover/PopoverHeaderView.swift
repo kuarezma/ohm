@@ -44,7 +44,7 @@ public struct PopoverHeaderView: View {
                     .monospacedDigit()
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(String(format: "%.1f", liveWatts)) Watts system power")
+            .accessibilityLabel(OhmFormatters.localizedFormat("%@ watts system power", locale: locale, liveWatts.formatted(.number.precision(.fractionLength(1)).locale(locale))))
 
             Spacer()
 
@@ -100,7 +100,7 @@ public struct BatteryStatusLineView: View {
     }
 
     private var batteryText: String {
-        let pct = "\(store.batteryState.percent)%"
+        let pct = OhmFormatters.formatPercent(Double(store.batteryState.percent), locale: locale)
         if store.batteryState.isCharging {
             return "\(pct) · \(OhmFormatters.localizedString("Charging", locale: locale))"
         }
@@ -112,19 +112,15 @@ public struct BatteryStatusLineView: View {
     }
 
     private var accessibilityString: String {
-        let pct = "\(store.batteryState.percent) percent battery"
+        let percent = OhmFormatters.formatPercent(Double(store.batteryState.percent), locale: locale)
         if store.batteryState.isCharging {
-            return "\(pct), charging"
+            return OhmFormatters.localizedFormat("%@ battery, charging", locale: locale, percent)
         }
         if let minutes = store.batteryForecastMinutes {
-            let wideTime = OhmFormatters.formatAccessibilityDuration(minutes: minutes, locale: locale)
-            if locale.identifier.starts(with: "tr") {
-                return "% \(store.batteryState.percent) pil, \(wideTime) kaldı"
-            } else {
-                return "\(pct), \(wideTime) remaining"
-            }
+            let duration = OhmFormatters.formatAccessibilityDuration(minutes: minutes, locale: locale)
+            return OhmFormatters.localizedFormat("%@ battery, %@ remaining", locale: locale, percent, duration)
         }
-        return pct
+        return OhmFormatters.localizedFormat("%@ battery", locale: locale, percent)
     }
 
     public var body: some View {
