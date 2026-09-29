@@ -6,23 +6,28 @@ Her görevin model seçimi ve gerekçesi `Docs/PLAN.md` § "Görev tablosu"ndad�
 | id | kapsam | sahip | zeka | bağımlılık | durum | kabul kriteri |
 |----|--------|-------|------|-----------|-------|---------------|
 | T-001 | Mimari ADR'ler (modüller, ledger şeması, kural DSL'i, dondurma güvenliği) | Opus 5.5 high | CC 🟡3 | – | REVIEW | `Docs/adr/0001..0004.md`, şef review |
-| T-001b | ADR'ye ikinci görüş | GPT-6 Astra medium | Codex 🟡2 | T-001 | TODO | İtirazlar ADR'de karara bağlanır |
+| T-001b | ADR'ye ikinci görüş | GPT-6.1 Sol high (salt okunur) | Codex 🟠3 | T-001 | DONE | İtirazlar ADR'de karara bağlanır |
 | T-002 | Rakip ve macOS 27 güç API taraması | Gemini 3.8 Flash high | AG 🔴3 | – | DONE | `Docs/research/competitors.md`, her iddia linkli |
 | T-010 | Spike: IOReport ile sudo'suz watt | Opus 5.5 high | CC 🟡3 | – | DONE (PARTIAL) | Aşağıdaki kart |
 | T-011 | Spike: `ri_energy_nj` ile süreç enerjisi | Opus 5.5 high | CC 🟡3 | – | DONE | Aşağıdaki kart |
 | T-012 | Spike: `PRIO_DARWIN_BG` ile E-core | Opus 5.5 high | CC 🟡3 | T-010 | DONE | Aşağıdaki kart |
 | T-013 | Spike: SIGSTOP ve aktivasyonda çözme | Opus 5.5 high | CC 🟡3 | – | DONE | Aşağıdaki kart |
-| T-020 | XcodeGen iskeleti | Gemini 3.8 Flash high | AG 🔴3 | spike kapısı, T-001 | TODO | `xcodegen && xcodebuild build` yeşil |
-| T-021 | OhmCore/Sampling | Opus 5.5 high | CC 🟡3 | T-020 | TODO | Testler yeşil, boşta CPU <%0,5 |
-| T-022 | Ledger (SQLite) | Gemini 3.8 Flash high | AG 🔴3 | T-020 | TODO | Hesap testleri yeşil |
-| T-023 | Governor (ECoreLane, Freezer, Journal) | Opus 5.5 high | CC 🟡3 | T-020 | TODO | Çökme/kurtarma testleri yeşil |
-| T-024 | Kritik review T-021 + T-023 | GPT-6 Astra high | Codex 🟠3 | T-021, T-023 | TODO | Bulgular testle kapanır |
-| T-030 | SwiftUI popover, halka, Settings, onboarding | Gemini 3.8 Flash high | AG 🔴3 | T-021 | TODO | Preview görüntüleri, açık/koyu, VoiceOver |
-| T-031 | RuleEngine ve kural arayüzü | Gemini 3.8 Flash high | AG 🔴3 | T-001 | TODO | Kural testleri yeşil |
+| T-020 | XcodeGen iskeleti | Gemini 3.8 Flash high | AG 🔴3 | spike kapısı, T-001 | DONE | `xcodegen && xcodebuild build` yeşil |
+| T-021 | OhmCore/Sampling | Opus 5.5 high | CC 🟡3 | T-020 | DONE | Testler yeşil, boşta CPU <%0,5 |
+| T-022 | Ledger (SQLite) | Gemini 3.8 Flash high | AG 🔴3 | T-020 | DONE | Hesap testleri yeşil |
+| T-023 | Governor (ECoreLane, Freezer, Journal) | Opus 5.5 high | CC 🟡3 | T-020 | DONE | Çökme/kurtarma testleri yeşil |
+| T-024 | Kritik review T-021 + T-023 | GPT-6 Astra high | Codex 🟠3 | T-021, T-023 | DONE | Bulgular testle kapanır |
+| T-025 | Kararsız Governor testleri 20 ve 22a: kök neden | GPT-6.1 Sol medium | Codex 🟡2 | T-023 | IN-PROGRESS | 20× Governor suite + 3× tam `swift test` kırmızısız |
+| T-026 | Dondurma güvenliği P1'leri (T-001b #1–3, #8) | GPT-6.1 Sol high | Codex 🟠3 | T-025 | TODO | Her bulguya regresyon testi; Governor/Journal testleri yeşil; kritik review Opus high |
+| T-027 | Ledger doğruluğu (T-001b #10–16, #18) | GPT-6.1 Sol medium | Codex 🟡2 | – | TODO | Her bulguya test; `swift test --filter OhmLedger` yeşil; ADR 0002 tek GPU kararı |
+| T-028 | Kural derleyici/motor doğruluğu (T-001b #5–7, #9) | GPT-6.1 Sol medium | Codex 🟡2 | – | TODO | Her bulguya test; `swift test --filter OhmRules` yeşil |
+| T-029 | Örnekleme geri basıncı (T-001b #17) | GPT-6.1 Sol medium | Codex 🟡2 | – | TODO | Tüketici durunca bellek sınırlı; enerji toplamı korunur (test) |
+| T-030 | SwiftUI popover, halka, Settings, onboarding | Gemini 3.8 Flash high | AG 🔴3 | T-021 | DONE | Preview görüntüleri, açık/koyu, VoiceOver |
+| T-031 | RuleEngine ve kural arayüzü | Gemini 3.8 Flash high | AG 🔴3 | T-001 | DONE | Kural testleri yeşil |
 | T-032 | RunawayDetector ve bildirimler | Gemini 3.8 Flash high | AG 🔴3 | T-021 | TODO | Sahte yükte tetiklenir |
 | T-033 | Widget, App Intents, `ohm` CLI | Gemini 3.8 Flash high | AG 🔴3 | T-022 | TODO | `ohm receipt --today` çıktısı |
-| T-040 | Doğal dilde kural (FoundationModels) | Gemini 3.8 Flash high | AG 🔴3 | T-031 | TODO | 20 cümlede ≥18 doğru |
-| T-041 | Pil tahmini | Gemini 3.8 Flash high | AG 🔴3 | T-022 | TODO | Hata <20 dk |
+| T-040 | Doğal dilde kural (FoundationModels) | Gemini 3.8 Flash high | AG 🔴3 | T-031 | DONE | 20 cümlede ≥18 doğru |
+| T-041 | Pil tahmini | Gemini 3.8 Flash high | AG 🔴3 | T-022 | DONE | Hata <20 dk |
 | T-050 | Site tasarım yönü ve metin taslağı | Opus 5.5 medium (şef) | CC 🔵2 | – | DONE | `Docs/SITE-BRIEF.md` |
 | T-051 | Site v1 kodu | Gemini 3.8 Flash high | AG 🔴3 | T-050 | DONE | 390/1440 px görüntü, konsol temiz, Lighthouse ≥95 |
 | T-052 | Site Türkçe sürümü | Gemini 3.8 Flash high | AG 🔴3 | T-051 | DONE | Şef okur |
