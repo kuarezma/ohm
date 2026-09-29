@@ -195,7 +195,19 @@ case "app-helper":
     // Helper with a watchdog on the root: exits if the root heartbeat is older than 2 s, or if it
     // observes a > 2 s gap in its own loop (it was frozen together with the root).
     let hb = arg("--hb")
+    // Reproduce a helper that is visible to process enumeration before its watchdog starts.
+    if let delay = arg("--startup-delay-ms").flatMap(UInt32.init) {
+        guard delay <= 1000 else { say("helper: invalid startup delay"); exit(2) }
+        usleep(delay * 1000)
+    }
     var last = Date()
+    // Publish readiness only after the watchdog has a pre-freeze timestamp.
+    if let ready = arg("--ready") {
+        guard FileManager.default.createFile(atPath: ready, contents: Data("ready".utf8)) else {
+            say("helper: cannot publish readiness"); exit(2)
+        }
+        say("helper: watchdog ready")
+    }
     while true {
         usleep(20_000)
         let now = Date()
