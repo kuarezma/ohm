@@ -97,7 +97,7 @@ macbook/
   4. "Neden yalnız Apple Silicon": P/E çekirdekler, birleşik bellek, ANE ve cihaz üstü model, kısa bir diyagramla.
   5. Gizlilik: Ağ yok, telemetri yok, kaynak kodu açık.
   6. Karşılaştırma tablosu: Activity Monitor, Stats, App Tamer ve Ohm.
-  7. İndirme: GitHub Release ve `brew install --cask ohm`, sistem gereksinimi (M1+, macOS 15+).
+  7. İndirme: GitHub Release ve `brew install --cask ohm`, sistem gereksinimi (M1+, macOS 26+).
   8. Katkı ve bağış (GitHub Sponsors), SSS.
 - **Görsel dil:** Koyu zemin, enerjiyi anlatan tek bir vurgu rengi (elektrik yeşili ya da amber; tasarım adımında seçilecek). Tipografi SF Pro yerine web için Inter/Geist. `prefers-color-scheme` ve `prefers-reduced-motion` desteklenir.
 - **Yayın:** GitHub Pages, adres `kuarezma.github.io/ohm` (`gh` bu hesapla oturum açmış durumda). Site, repodaki `site/` klasöründen bir GitHub Actions Pages workflow'uyla yayınlanır; alan adı gerekmez. Kullanıcı ileride bir alan adı alırsa yalnız bir `site/CNAME` dosyası ve DNS kaydı eklenir; site kodu değişmez. Bu yüzden bütün bağlantılar göreli yazılır (`/ohm/` tabanına bağımlı değil). Repo oluşturma, push ve Pages'i açma dışa dönük işlerdir; her biri için ayrıca onay alınır.
