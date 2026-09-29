@@ -17,8 +17,8 @@ Her görevin model seçimi ve gerekçesi `Docs/PLAN.md` § "Görev tablosu"ndad�
 | T-022 | Ledger (SQLite) | Gemini 3.8 Flash high | AG 🔴3 | T-020 | DONE | Hesap testleri yeşil |
 | T-023 | Governor (ECoreLane, Freezer, Journal) | Opus 5.5 high | CC 🟡3 | T-020 | DONE | Çökme/kurtarma testleri yeşil |
 | T-024 | Kritik review T-021 + T-023 | GPT-6 Astra high | Codex 🟠3 | T-021, T-023 | DONE | Bulgular testle kapanır |
-| T-025 | Kararsız Governor testleri 20 ve 22a: kök neden | GPT-6.1 Sol medium | Codex 🟡2 | T-023 | IN-PROGRESS | 20× Governor suite + 3× tam `swift test` kırmızısız |
-| T-026 | Dondurma güvenliği P1'leri (T-001b #1–3, #8) | GPT-6.1 Sol high | Codex 🟠3 | T-025 | TODO | Her bulguya regresyon testi; Governor/Journal testleri yeşil; kritik review Opus high |
+| T-025 | Kararsız Governor testleri 20 ve 22a: kök neden | GPT-6.1 Sol medium | Codex 🟡2 | T-023 | DONE | 20× Governor suite + 3× tam `swift test` kırmızısız |
+| T-026 | Dondurma güvenliği P1'leri + otomatik dondurma izin listesi (T-001b #1–4, #8) | GPT-6.1 Sol high | Codex 🟠3 | T-025 | TODO | Her bulguya regresyon testi; Governor/Journal testleri yeşil; kritik review Opus high |
 | T-027 | Ledger doğruluğu (T-001b #10–16, #18) | GPT-6.1 Sol medium | Codex 🟡2 | – | TODO | Her bulguya test; `swift test --filter OhmLedger` yeşil; ADR 0002 tek GPU kararı |
 | T-028 | Kural derleyici/motor doğruluğu (T-001b #5–7, #9) | GPT-6.1 Sol medium | Codex 🟡2 | – | TODO | Her bulguya test; `swift test --filter OhmRules` yeşil |
 | T-029 | Örnekleme geri basıncı (T-001b #17) | GPT-6.1 Sol medium | Codex 🟡2 | – | TODO | Tüketici durunca bellek sınırlı; enerji toplamı korunur (test) |

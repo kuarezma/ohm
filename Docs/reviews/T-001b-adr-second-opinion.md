@@ -10,7 +10,7 @@ P1'ler şef tarafından kodda doğrulandı: `Freezer.swift:131,140`, `JournalRec
 | 1 | P1 | Kabul. `matches` yerine her yolda `IdentityStatus`; yalnız `.gone`/`.mismatch` üyeyi düşürür, `.unknown` kaydı korur. | T-026 |
 | 2 | P1 | Kabul. Bilinmeyen boot ≠ farklı boot: grup `retained`'da kalır, yeniden denenir; güvenilir boot yoksa yeni kalıcı etki uygulanmaz. | T-026 |
 | 3 | P1 | Kabul. `spawnedWatcher` yalnız açık etki kalmadığında çıkar; başarısızlıkta artan aralıkla yeniden dener. | T-026 |
-| 4 | P2 | Kullanıcı kararı bekliyor: otomatik (kural/kaçak süreç) dondurma yalnız doğrulanmış topoloji izin listesiyle mi başlasın? Şef önerisi: evet; elle dondurma serbest. | karar |
+| 4 | P2 | Kabul (kullanıcı kararı şefe bıraktı, 2026-09-30). Otomatik dondurma (kural, kaçak süreç) yalnız doğrulanmış topoloji izin listesindeki bundle'lar için; listede yoksa `FreezeVeto.unverifiedTopology`, E-core serbest. Elle dondurma serbest; sağlık kontrolü ek koruma olarak kalır. ADR 0004'e işlenir. | T-026 |
 | 5–7, 9 | P2 | Kabul. Doğal dil koşulu sessizce düşmez; eksik alan varsayılanla doldurulmaz, `.ready` öncesi doğrulama; `pendingInactive` katkıyı korur; ad çözümü belirsizlikte soru sorar. | T-028 |
 | 8 | P2 | Kabul. Uzlaştırmada mevcut E-core grubunun parametreleri yenilenir. | T-026 |
 | 10–16 | P2 | Kabul. Ledger: dakika sınırında orantılı bölme, rollup `rolled_through_hour`'dan, fiş/P_ref saatlik+dakikalık birleşim, karma fişte kaynak ayrımı, V×I kaynak kimliği, `readable_cpu_uj`, WAL ile birlikte yedek. | T-027 |
