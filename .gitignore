@@ -6,3 +6,4 @@ DerivedData/
 *.xcuserstate
 spikes/bin/
 .agy-staff/
+.claude/
