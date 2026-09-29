@@ -91,7 +91,10 @@ let package = Package(
         ),
         .testTarget(
             name: "OhmRulesTests",
-            dependencies: ["OhmRules"]
+            dependencies: ["OhmRules"],
+            resources: [
+                .process("nl_eval.json")
+            ]
         ),
         .testTarget(
             name: "OhmForecastTests",

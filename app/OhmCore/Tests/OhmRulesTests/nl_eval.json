@@ -1,0 +1,489 @@
+[
+  {
+    "id": "TR-1",
+    "sentence": "Pil %30'un altındayken Chrome'u E-core'a al",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000001",
+      "name": "Düşük pilde Chrome E-core",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Pil %30'un altındayken Chrome'u E-core'a al" },
+      "when": {
+        "type": "all",
+        "of": [
+          { "type": "powerSource", "is": "battery" },
+          { "type": "batteryPercent", "op": "below", "value": 30 }
+        ]
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.google.Chrome", "displayName": "Google Chrome" }
+        ]
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "release" }
+      ]
+    }
+  },
+  {
+    "id": "TR-2",
+    "sentence": "Pildeyken Slack'i arka planda 10 dakika kalınca dondur",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000002",
+      "name": "Pilde Slack'i dondur",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Pildeyken Slack'i arka planda 10 dakika kalınca dondur" },
+      "when": {
+        "type": "powerSource",
+        "is": "battery"
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.tinyspeck.slackmacgap", "displayName": "Slack" }
+        ]
+      },
+      "actions": [
+        { "type": "freeze", "minHiddenSeconds": 600 }
+      ]
+    }
+  },
+  {
+    "id": "TR-3",
+    "sentence": "Mac ısınınca Docker'ı E-core'da tut ve bana haber ver",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000003",
+      "name": "Sıcakta Docker'ı yavaşlat",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Mac ısınınca Docker'ı E-core'da tut ve bana haber ver" },
+      "when": {
+        "type": "thermal",
+        "atLeast": "serious"
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.docker.docker", "displayName": "Docker" }
+        ]
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "keep" },
+        { "type": "notify" }
+      ]
+    }
+  },
+  {
+    "id": "TR-4",
+    "sentence": "Xcode öndeyken Discord'u dondur",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000004",
+      "name": "Xcode öndeyken Discord dondur",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Xcode öndeyken Discord'u dondur" },
+      "when": {
+        "type": "frontmostApp",
+        "app": { "bundleID": "com.apple.dt.Xcode", "displayName": "Xcode" }
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.hnc.Discord", "displayName": "Discord" }
+        ]
+      },
+      "actions": [
+        { "type": "freeze" }
+      ]
+    }
+  },
+  {
+    "id": "TR-5",
+    "sentence": "Hafta içi 22:00 ile 07:00 arası Focus açıkken Dropbox'ı E-core'a al",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000005",
+      "name": "Gece Dropbox'ı yavaşlat",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Hafta içi 22:00 ile 07:00 arası Focus açıkken Dropbox'ı E-core'a al" },
+      "when": {
+        "type": "all",
+        "of": [
+          { "type": "timeWindow", "start": "22:00", "end": "07:00", "weekdays": ["mon", "tue", "wed", "thu", "fri"] },
+          { "type": "focus", "isOn": true }
+        ]
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.getdropbox.dropbox", "displayName": "Dropbox" }
+        ]
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "release" }
+      ]
+    }
+  },
+  {
+    "id": "TR-6",
+    "sentence": "Şarjdayken ve pil %80 veya üstündeyken kaçak süreçleri E-core'a al ve haber ver",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000006",
+      "name": "Şarjda kaçak süreç bildir",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Şarjdayken ve pil %80 veya üstündeyken kaçak süreçleri E-core'a al ve haber ver" },
+      "when": {
+        "type": "all",
+        "of": [
+          { "type": "powerSource", "is": "ac" },
+          { "type": "batteryPercent", "op": "atOrAbove", "value": 80 }
+        ]
+      },
+      "targets": {
+        "type": "runaway"
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "release" },
+        { "type": "notify" }
+      ]
+    }
+  },
+  {
+    "id": "TR-7",
+    "sentence": "Pil %20'nin altındayken veya Mac aşırı ısınınca Slack'i E-core'a al",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000007",
+      "name": "Düşük pil veya sıcakta Slack",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Pil %20'nin altındayken veya Mac aşırı ısınınca Slack'i E-core'a al" },
+      "when": {
+        "type": "any",
+        "of": [
+          {
+            "type": "all",
+            "of": [
+              { "type": "batteryPercent", "op": "below", "value": 20 },
+              { "type": "powerSource", "is": "battery" }
+            ]
+          },
+          { "type": "thermal", "atLeast": "critical" }
+        ]
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.tinyspeck.slackmacgap", "displayName": "Slack" }
+        ]
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "release" }
+      ]
+    }
+  },
+  {
+    "id": "TR-8",
+    "sentence": "Chrome'un önbelleğini sil ve geçmişi temizle",
+    "expectedType": "unsupported"
+  },
+  {
+    "id": "TR-9",
+    "sentence": "Pildeyken ve (pil %20 altındayken veya Mac ısınınca) Safari'yi dondur",
+    "expectedType": "unsupported"
+  },
+  {
+    "id": "TR-10",
+    "sentence": "14:00 ile 18:00 arası Xcode önde değilken Chrome'u 15 dakika sonra dondur",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000010",
+      "name": "Xcode yokken Chrome dondur",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "14:00 ile 18:00 arası Xcode önde değilken Chrome'u 15 dakika sonra dondur" },
+      "when": {
+        "type": "all",
+        "of": [
+          { "type": "timeWindow", "start": "14:00", "end": "18:00" },
+          {
+            "type": "not",
+            "condition": {
+              "type": "frontmostApp",
+              "app": { "bundleID": "com.apple.dt.Xcode", "displayName": "Xcode" }
+            }
+          }
+        ]
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.google.Chrome", "displayName": "Google Chrome" }
+        ]
+      },
+      "actions": [
+        { "type": "freeze", "minHiddenSeconds": 900 }
+      ]
+    }
+  },
+  {
+    "id": "EN-1",
+    "sentence": "Throttle Chrome to efficiency cores when battery is below 25%",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000011",
+      "name": "Throttle Chrome on low battery",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Throttle Chrome to efficiency cores when battery is below 25%" },
+      "when": {
+        "type": "all",
+        "of": [
+          { "type": "powerSource", "is": "battery" },
+          { "type": "batteryPercent", "op": "below", "value": 25 }
+        ]
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.google.Chrome", "displayName": "Google Chrome" }
+        ]
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "release" }
+      ]
+    }
+  },
+  {
+    "id": "EN-2",
+    "sentence": "Freeze Slack after 15 minutes in background when on battery",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000012",
+      "name": "Freeze Slack on battery",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Freeze Slack after 15 minutes in background when on battery" },
+      "when": {
+        "type": "powerSource",
+        "is": "battery"
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.tinyspeck.slackmacgap", "displayName": "Slack" }
+        ]
+      },
+      "actions": [
+        { "type": "freeze", "minHiddenSeconds": 900 }
+      ]
+    }
+  },
+  {
+    "id": "EN-3",
+    "sentence": "When Mac gets hot, keep Docker on E-core and notify me",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000013",
+      "name": "Keep Docker on E-core when hot",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "When Mac gets hot, keep Docker on E-core and notify me" },
+      "when": {
+        "type": "thermal",
+        "atLeast": "serious"
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.docker.docker", "displayName": "Docker" }
+        ]
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "keep" },
+        { "type": "notify" }
+      ]
+    }
+  },
+  {
+    "id": "EN-4",
+    "sentence": "When Xcode is frontmost, freeze Discord",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000014",
+      "name": "Freeze Discord when Xcode frontmost",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "When Xcode is frontmost, freeze Discord" },
+      "when": {
+        "type": "frontmostApp",
+        "app": { "bundleID": "com.apple.dt.Xcode", "displayName": "Xcode" }
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.hnc.Discord", "displayName": "Discord" }
+        ]
+      },
+      "actions": [
+        { "type": "freeze" }
+      ]
+    }
+  },
+  {
+    "id": "EN-5",
+    "sentence": "On weekdays between 23:00 and 06:00 when Focus is on, put Dropbox on E-core",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000015",
+      "name": "Night Dropbox throttle",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "On weekdays between 23:00 and 06:00 when Focus is on, put Dropbox on E-core" },
+      "when": {
+        "type": "all",
+        "of": [
+          { "type": "timeWindow", "start": "23:00", "end": "06:00", "weekdays": ["mon", "tue", "wed", "thu", "fri"] },
+          { "type": "focus", "isOn": true }
+        ]
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.getdropbox.dropbox", "displayName": "Dropbox" }
+        ]
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "release" }
+      ]
+    }
+  },
+  {
+    "id": "EN-6",
+    "sentence": "When on AC and battery is at or above 80%, throttle runaway processes and alert me",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000016",
+      "name": "Throttle runaways on AC",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "When on AC and battery is at or above 80%, throttle runaway processes and alert me" },
+      "when": {
+        "type": "all",
+        "of": [
+          { "type": "powerSource", "is": "ac" },
+          { "type": "batteryPercent", "op": "atOrAbove", "value": 80 }
+        ]
+      },
+      "targets": {
+        "type": "runaway"
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "release" },
+        { "type": "notify" }
+      ]
+    }
+  },
+  {
+    "id": "EN-7",
+    "sentence": "When battery is below 20% or thermal state is serious, move Slack to E-core",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000017",
+      "name": "Slack E-core on low battery or thermal",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "When battery is below 20% or thermal state is serious, move Slack to E-core" },
+      "when": {
+        "type": "any",
+        "of": [
+          {
+            "type": "all",
+            "of": [
+              { "type": "batteryPercent", "op": "below", "value": 20 },
+              { "type": "powerSource", "is": "battery" }
+            ]
+          },
+          { "type": "thermal", "atLeast": "serious" }
+        ]
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.tinyspeck.slackmacgap", "displayName": "Slack" }
+        ]
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "release" }
+      ]
+    }
+  },
+  {
+    "id": "EN-8",
+    "sentence": "Delete Chrome's cache and cookies",
+    "expectedType": "unsupported"
+  },
+  {
+    "id": "EN-9",
+    "sentence": "When Xcode is not active, freeze Chrome after 20 minutes",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000019",
+      "name": "Freeze Chrome when Xcode inactive",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "When Xcode is not active, freeze Chrome after 20 minutes" },
+      "when": {
+        "type": "not",
+        "condition": {
+          "type": "frontmostApp",
+          "app": { "bundleID": "com.apple.dt.Xcode", "displayName": "Xcode" }
+        }
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.google.Chrome", "displayName": "Google Chrome" }
+        ]
+      },
+      "actions": [
+        { "type": "freeze", "minHiddenSeconds": 1200 }
+      ]
+    }
+  },
+  {
+    "id": "EN-10",
+    "sentence": "Between 09:00 and 17:00 throttle Slack to E-core",
+    "expectedType": "ready",
+    "expectedRule": {
+      "schemaVersion": 1,
+      "id": "00000000-0000-0000-0000-000000000020",
+      "name": "Work hours Slack E-core",
+      "enabled": false,
+      "source": { "type": "naturalLanguage", "text": "Between 09:00 and 17:00 throttle Slack to E-core" },
+      "when": {
+        "type": "timeWindow",
+        "start": "09:00",
+        "end": "17:00"
+      },
+      "targets": {
+        "type": "apps",
+        "apps": [
+          { "bundleID": "com.tinyspeck.slackmacgap", "displayName": "Slack" }
+        ]
+      },
+      "actions": [
+        { "type": "eCore", "whileFrontmost": "release" }
+      ]
+    }
+  }
+]
