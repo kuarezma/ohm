@@ -5,13 +5,13 @@ Her görevin model seçimi ve gerekçesi `Docs/PLAN.md` § "Görev tablosu"ndad�
 
 | id | kapsam | sahip | zeka | bağımlılık | durum | kabul kriteri |
 |----|--------|-------|------|-----------|-------|---------------|
-| T-001 | Mimari ADR'ler (modüller, ledger şeması, kural DSL'i, dondurma güvenliği) | Opus 5.5 high | CC 🟡3 | – | TODO | `Docs/adr/0001..0004.md`, şef review |
+| T-001 | Mimari ADR'ler (modüller, ledger şeması, kural DSL'i, dondurma güvenliği) | Opus 5.5 high | CC 🟡3 | – | REVIEW | `Docs/adr/0001..0004.md`, şef review |
 | T-001b | ADR'ye ikinci görüş | GPT-6 Astra medium | Codex 🟡2 | T-001 | TODO | İtirazlar ADR'de karara bağlanır |
-| T-002 | Rakip ve macOS 27 güç API taraması | Gemini 3.8 Flash high | AG 🔴3 | – | TODO | `Docs/research/competitors.md`, her iddia linkli |
-| T-010 | Spike: IOReport ile sudo'suz watt | Opus 5.5 high | CC 🟡3 | – | TODO | Aşağıdaki kart |
-| T-011 | Spike: `ri_energy_nj` ile süreç enerjisi | Opus 5.5 high | CC 🟡3 | – | TODO | Aşağıdaki kart |
-| T-012 | Spike: `PRIO_DARWIN_BG` ile E-core | Opus 5.5 high | CC 🟡3 | T-010 | TODO | Aşağıdaki kart |
-| T-013 | Spike: SIGSTOP ve aktivasyonda çözme | Opus 5.5 high | CC 🟡3 | – | TODO | Aşağıdaki kart |
+| T-002 | Rakip ve macOS 27 güç API taraması | Gemini 3.8 Flash high | AG 🔴3 | – | DONE | `Docs/research/competitors.md`, her iddia linkli |
+| T-010 | Spike: IOReport ile sudo'suz watt | Opus 5.5 high | CC 🟡3 | – | DONE (PARTIAL) | Aşağıdaki kart |
+| T-011 | Spike: `ri_energy_nj` ile süreç enerjisi | Opus 5.5 high | CC 🟡3 | – | DONE | Aşağıdaki kart |
+| T-012 | Spike: `PRIO_DARWIN_BG` ile E-core | Opus 5.5 high | CC 🟡3 | T-010 | DONE | Aşağıdaki kart |
+| T-013 | Spike: SIGSTOP ve aktivasyonda çözme | Opus 5.5 high | CC 🟡3 | – | DONE | Aşağıdaki kart |
 | T-020 | XcodeGen iskeleti | Gemini 3.8 Flash high | AG 🔴3 | spike kapısı, T-001 | TODO | `xcodegen && xcodebuild build` yeşil |
 | T-021 | OhmCore/Sampling | Opus 5.5 high | CC 🟡3 | T-020 | TODO | Testler yeşil, boşta CPU <%0,5 |
 | T-022 | Ledger (SQLite) | Gemini 3.8 Flash high | AG 🔴3 | T-020 | TODO | Hesap testleri yeşil |
@@ -23,9 +23,9 @@ Her görevin model seçimi ve gerekçesi `Docs/PLAN.md` § "Görev tablosu"ndad�
 | T-033 | Widget, App Intents, `ohm` CLI | Gemini 3.8 Flash high | AG 🔴3 | T-022 | TODO | `ohm receipt --today` çıktısı |
 | T-040 | Doğal dilde kural (FoundationModels) | Gemini 3.8 Flash high | AG 🔴3 | T-031 | TODO | 20 cümlede ≥18 doğru |
 | T-041 | Pil tahmini | Gemini 3.8 Flash high | AG 🔴3 | T-022 | TODO | Hata <20 dk |
-| T-050 | Site tasarım yönü ve metin taslağı | Opus 5.5 medium (şef) | CC 🔵2 | – | TODO | `Docs/SITE-BRIEF.md` |
-| T-051 | Site v1 kodu | Gemini 3.8 Flash high | AG 🔴3 | T-050 | TODO | 390/1440 px görüntü, konsol temiz, Lighthouse ≥95 |
-| T-052 | Site Türkçe sürümü | Gemini 3.8 Flash high | AG 🔴3 | T-051 | TODO | Şef okur |
+| T-050 | Site tasarım yönü ve metin taslağı | Opus 5.5 medium (şef) | CC 🔵2 | – | DONE | `Docs/SITE-BRIEF.md` |
+| T-051 | Site v1 kodu | Gemini 3.8 Flash high | AG 🔴3 | T-050 | DONE | 390/1440 px görüntü, konsol temiz, Lighthouse ≥95 |
+| T-052 | Site Türkçe sürümü | Gemini 3.8 Flash high | AG 🔴3 | T-051 | DONE | Şef okur |
 | T-060 | CI: build, test, notarize, appcast | Gemini 3.8 Flash high | AG 🔴3 | T-020 | TODO | Dry-run yeşil |
 | T-061 | Performans ölçümü | Gemini 3.8 Flash high | AG 🔴3 | T-030 | TODO | Hedef tablo dolar |
 | T-062 | Homebrew cask, README, katkı rehberi | Gemini 3.8 Flash high | AG 🔴3 | T-060 | TODO | `brew audit` temiz |
@@ -39,7 +39,7 @@ Yer: `spikes/ioreport/` (tek dosyalık Swift veya C + Swift; `spikes/README.md`'
 Kabul kapısı: `spikes/ioreport/run.sh` 10 sn boyunca saniyede bir satır basar (`cpu_p_W cpu_e_W gpu_W ane_W dram_W`). Boşta ve `yes > /dev/null` yükü altında CPU değeri belirgin artar. Karşılaştırma için aynı anda `AppleSmartBattery` sistem gücü (Voltage × Amperage) okunur; IOReport toplamı sistem gücünden küçük olmalı ve yükle birlikte hareket etmeli (sudo olmadığı için `powermetrics` kullanılamaz).
 Dokunma: `spikes/` dışı.
 Olgular: macmon (Rust, github.com/vladkens/macmon) aynı işi sudo'suz yapar; referans olarak kaynağı okunabilir. Kanal grupları: "Energy Model", "CPU Stats" / "CPU Core Performance States", "GPU Stats". Fonksiyonlar `IOReportCopyChannelsInGroup`, `IOReportCreateSubscription`, `IOReportCreateSamples`, `IOReportCreateSamplesDelta`, `IOReportSimpleGetIntegerValue`, `IOReportChannelGetUnitLabel` vb. `/usr/lib/libIOReport.dylib`'ten dlopen veya link ile gelir; başlık yoktur, prototipler elle yazılır. Birim etiketi mJ/uJ/nJ olabilir; etikete göre dönüştür.
-Durum: TODO
+Durum: DONE (PARTIAL) — CPU/DRAM/ANE enerji sayaçları 1 Hz güncellenmiyor; yedek tasarım `spikes/README.md`
 
 ### T-011 Spike: süreç başına enerji
 Model: Opus 5.5 (high) | Zeka: CC 🟡3

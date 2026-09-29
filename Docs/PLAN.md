@@ -12,7 +12,7 @@ Menü çubuğunda yaşayan bir uygulama. Tek cümlelik vaadi: **"Pilin nereye gi
 
 ### Özellikler (etki sırasıyla)
 1. **Pil fişi:** Her uygulamanın harcadığı enerjiyi joule cinsinden ölçer ve bunu "pil dakikası" ile "pil yüzdesi" olarak gösterir. Örnek: "Slack bugün 38 dk pil yedi."
-2. **Canlı güç akışı:** CPU (P ve E kümeleri ayrı), GPU, ANE ve DRAM için anlık watt değerleri, çekirdek doluluğu ve termal baskı.
+2. **Canlı güç akışı:** Toplam sistem gücü (`SystemLoad`), GPU gücü, süreç enerjilerinin toplamından CPU gücü, P/E küme doluluğu ve termal baskı. (T-010 sonucu: macOS 27'de IOReport'un CPU/DRAM/ANE enerji sayaçları saniyelik güncellenmiyor; bileşen başına canlı CPU/DRAM/ANE watt'ı gösterilmez.)
 3. **E-core şeridi:** Seçilen bir uygulamayı tek tıkla yalnız verimlilik çekirdeklerinde çalıştırır. Uygulama öne gelince eski haline döner (isteğe bağlı).
 4. **Dondurma:** Görünmeyen bir uygulamayı tamamen durdurur ve uygulama öne geldiği anda çözer. Çökmeye karşı bir kayıt dosyası (journal) ve otomatik çözme vardır.
 5. **Kaçak süreç dedektörü:** Gizli olduğu halde uzun süre yüksek CPU harcayan bir süreci yakalar. Bildirimle birlikte "E-core'a al / dondur / kapat" seçeneklerini sunar.
