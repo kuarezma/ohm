@@ -28,6 +28,12 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: OhmApp
+      # ADR 0004 § 6: SMAppService.agent(plistName: "dev.ohm.thawd.plist")
+      - path: ohm-thawd/LaunchAgents/dev.ohm.thawd.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchAgents
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.ohm.Ohm
@@ -130,6 +136,8 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: ohm-thawd
+        excludes:
+          - "LaunchAgents/**"
     settings:
       base:
         PRODUCT_NAME: ohm-thawd

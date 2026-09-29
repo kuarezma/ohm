@@ -90,11 +90,18 @@ let package = Package(
         ),
         .testTarget(
             name: "OhmJournalTests",
-            dependencies: ["OhmJournal"]
+            dependencies: ["OhmJournal", "OhmModel", "COhmSys"]
+        ),
+        // T-023 test support: separate process for the ADR 0004 § 10 kill -9 / crash tests.
+        .executableTarget(
+            name: "OhmTestHost",
+            dependencies: ["OhmGovernor", "OhmJournal", "OhmModel", "COhmSys"],
+            path: "Tests/OhmGovernorTests/Host"
         ),
         .testTarget(
             name: "OhmGovernorTests",
-            dependencies: ["OhmGovernor"]
+            dependencies: ["OhmGovernor", "OhmJournal", "OhmModel", "COhmSys"],
+            exclude: ["Host", "Scripts"]
         ),
         .testTarget(
             name: "OhmRulesTests",

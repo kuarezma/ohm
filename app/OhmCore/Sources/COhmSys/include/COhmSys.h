@@ -57,4 +57,6 @@ void ohm_ior_close(ohm_ior *h);
 /// written (at most `cap`) or -1; `dt_abs` gets the mach-absolute interval between the samples.
 int ohm_ior_sample(ohm_ior *h, ohm_ior_channel *out, int cap, uint64_t *dt_abs);
 
+#include "thaw_table.h"
+
 #endif /* COHMSYS_H */

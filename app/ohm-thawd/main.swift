@@ -1,6 +1,4 @@
-import Foundation
 import OhmJournal
-import COhmSys
 
-// ohm-thawd: watcher daemon
-// main prints nothing and exits 0
+// ohm-thawd: ADR 0004 § 6 watcher. LaunchAgent (no arguments) or `--spawned` by Ohm.
+ThawWatcher.main(arguments: CommandLine.arguments)
