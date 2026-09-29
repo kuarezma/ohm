@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ohm — Where did your battery go?</title>
+  <meta name="description" content="Ohm prints a battery receipt for every app on your Apple Silicon Mac and moves power-hungry apps to efficiency cores with one click.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%23C4382C' stroke-width='4'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23C4382C'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@800&family=Hanken+Grotesk:wght@400;600&family=Martian+Mono:wght@400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner container">
+      <a href="./" class="nav-brand" aria-label="Ohm home">
+        <span class="brand-resistor" aria-hidden="true">
+          <span class="resistor-cap"></span>
+          <span class="resistor-body">
+            <span class="b-band b-red"></span>
+            <span class="b-band b-violet"></span>
+            <span class="b-band b-orange"></span>
+            <span class="b-band b-gold"></span>
+          </span>
+          <span class="resistor-cap"></span>
+        </span>
+        <span class="brand-name">ohm</span>
+      </a>
+
+      <nav class="nav-links" aria-label="Main Navigation">
+        <a href="#lanes">Lanes</a>
+        <a href="#features">Features</a>
+        <a href="#silicon">Why M-Series</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#compare">Compare</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+
+      <div class="nav-actions">
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle dark/light theme">
+          <span class="theme-icon" aria-hidden="true">◑</span>
+          <span class="theme-text">Theme</span>
+        </button>
+        <a href="https://github.com/kuarezma/ohm" class="nav-gh-link" target="_blank" rel="noopener noreferrer">
+          GitHub <span class="star-icon" aria-hidden="true">★</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero-section">
+      <div class="container hero-grid">
+        <div class="hero-content">
+          <div class="hero-badge">Apple Silicon Menubar Utility</div>
+          <h1 class="hero-title">Where did your battery go?</h1>
+          <p class="hero-sub">
+            Ohm prints a receipt for every app on your Mac: how many minutes of battery it cost you today. One click moves a hungry app to the efficiency cores or freezes it until you come back.
+          </p>
+
+          <div class="hero-cta-group">
+            <a href="https://github.com/kuarezma/ohm" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
+              Watch releases on GitHub
+            </a>
+            <div class="install-card">
+              <div class="install-header">
+                <span class="install-tag">Available with v1.0</span>
+              </div>
+              <div class="install-cli">
+                <code id="brew-code">brew install --cask ohm</code>
+                <button type="button" class="btn-copy" id="btn-copy" aria-label="Copy brew install command">
+                  <span id="copy-status">Copy</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-demo" aria-label="Live interactive Ohm preview">
+          <div class="menubar-strip">
+            <div class="menubar-left">
+              <svg class="ring-icon" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2.5" opacity="0.3" />
+                <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2.5" stroke-dasharray="38 12" stroke-linecap="round" />
+                <circle cx="10" cy="10" r="3" fill="currentColor" />
+              </svg>
+              <span class="menubar-title">Ohm</span>
+            </div>
+            <div class="menubar-right">
+              <span class="live-pulse" aria-hidden="true"></span>
+              <span class="live-watt" id="live-wattage">7.4 W</span>
+            </div>
+          </div>
+
+          <div class="popover-panel">
+            <div class="popover-meta">
+              <span class="popover-device">Apple Silicon M3 · 8 Cores</span>
+              <span class="popover-tag">Live</span>
+            </div>
+            <div class="cluster-bars">
+              <div class="cluster-row">
+                <div class="cluster-info">
+                  <span class="cluster-name">P-Cluster (4 cores)</span>
+                  <span class="cluster-w" id="p-cluster-val">5.3 W</span>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill bar-p" id="p-cluster-bar" style="width: 58%;"></div>
+                </div>
+              </div>
+              <div class="cluster-row">
+                <div class="cluster-info">
+                  <span class="cluster-name">E-Cluster (4 cores)</span>
+                  <span class="cluster-w" id="e-cluster-val">2.1 W</span>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill bar-e" id="e-cluster-bar" style="width: 28%;"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="printer-slot" aria-hidden="true">
+              <div class="slot-slit"></div>
+            </div>
+          </div>
+
+          <div class="receipt-container">
+            <div class="receipt-paper" id="receipt-paper">
+              <div class="receipt-head">
+                <p class="receipt-logo">BATTERY RECEIPT</p>
+                <div class="receipt-meta-line">
+                  <span>TODAY'S USAGE</span>
+                  <span>BATTERY</span>
+                </div>
+                <div class="receipt-rule" aria-hidden="true">================================</div>
+              </div>
+
+              <div class="receipt-rows" role="table" aria-label="Per-app battery minutes receipt">
+                <div class="receipt-row" data-app="chrome" data-minutes="72" data-saved="25" role="row">
+                  <div class="row-left" role="cell">
+                    <span class="resistor-stripe stripe-red" aria-hidden="true"></span>
+                    <span class="app-title">Google Chrome</span>
+                  </div>
+                  <div class="row-right" role="cell">
+                    <span class="time-display" id="time-chrome">
+                      <span class="active-time">1h 12m</span>
+                    </span>
+                    <button type="button" class="btn-e" data-app="chrome" aria-label="Switch Google Chrome to efficiency cores" aria-pressed="false">E</button>
+                  </div>
+                </div>
+
+                <div class="receipt-row" data-app="slack" data-minutes="38" data-saved="13" role="row">
+                  <div class="row-left" role="cell">
+                    <span class="resistor-stripe stripe-orange" aria-hidden="true"></span>
+                    <span class="app-title">Slack</span>
+                  </div>
+                  <div class="row-right" role="cell">
+                    <span class="time-display" id="time-slack">
+                      <span class="active-time">38m</span>
+                    </span>
+                    <button type="button" class="btn-e" data-app="slack" aria-label="Switch Slack to efficiency cores" aria-pressed="false">E</button>
+                  </div>
+                </div>
+
+                <div class="receipt-row" data-app="xcode" data-minutes="27" data-saved="9" role="row">
+                  <div class="row-left" role="cell">
+                    <span class="resistor-stripe stripe-violet" aria-hidden="true"></span>
+                    <span class="app-title">Xcode</span>
+                  </div>
+                  <div class="row-right" role="cell">
+                    <span class="time-display" id="time-xcode">
+                      <span class="active-time">27m</span>
+                    </span>
+                    <button type="button" class="btn-e" data-app="xcode" aria-label="Switch Xcode to efficiency cores" aria-pressed="false">E</button>
+                  </div>
+                </div>
+
+                <div class="receipt-row" data-app="spotify" data-minutes="9" data-saved="3" role="row">
+                  <div class="row-left" role="cell">
+                    <span class="resistor-stripe stripe-brown" aria-hidden="true"></span>
+                    <span class="app-title">Spotify</span>
+                  </div>
+                  <div class="row-right" role="cell">
+                    <span class="time-display" id="time-spotify">
+                      <span class="active-time">9m</span>
+                    </span>
+                    <button type="button" class="btn-e" data-app="spotify" aria-label="Switch Spotify to efficiency cores" aria-pressed="false">E</button>
+                  </div>
+                </div>
+
+                <div class="receipt-row row-other" role="row">
+                  <div class="row-left" role="cell">
+                    <span class="resistor-stripe stripe-gold" aria-hidden="true"></span>
+                    <span class="app-title">Other (display, radios)</span>
+                  </div>
+                  <div class="row-right" role="cell">
+                    <span class="time-display">
+                      <span class="active-time">2h 04m</span>
+                    </span>
+                    <span class="btn-placeholder" aria-hidden="true"></span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="receipt-foot">
+                <div class="receipt-rule" aria-hidden="true">--------------------------------</div>
+                <div class="receipt-total" aria-live="polite" id="receipt-total-container">
+                  <span class="total-caption">TOTAL BATTERY COST</span>
+                  <span class="total-number" id="receipt-total-value">4h 30m</span>
+                </div>
+                <div class="receipt-savings-banner" id="receipt-savings-banner" aria-hidden="true">
+                  <span class="savings-text">E-core saving active: <strong id="total-saved-text">0m</strong> extended</span>
+                </div>
+                <div class="receipt-barcode" aria-hidden="true">
+                  || | | |||| || | || |||| | ||| | || ||||
+                </div>
+                <div class="receipt-tear" aria-hidden="true"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="lanes-section" id="lanes">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">Your M-series chip has two kinds of cores. Ohm lets you choose which ones an app gets.</h2>
+          <p class="section-sub">Move an app to the efficiency cores. It keeps running, just slower and cooler.</p>
+        </div>
+
+        <div class="lanes-interactive-board" aria-label="Interactive CPU Core Lanes">
+          <div class="lanes-grid">
+            <div class="lane-box lane-p" id="p-lane">
+              <div class="lane-header">
+                <div class="lane-heading">
+                  <span class="lane-tag tag-p">P-LANE</span>
+                  <span class="lane-core-count">4 Performance Cores (P0–P3)</span>
+                </div>
+                <span class="lane-caption">Full frequency · Higher thermal output</span>
+              </div>
+              <div class="lane-chip-area" id="p-chips" role="group" aria-label="Apps running on Performance cores">
+                <button type="button" class="app-chip" data-app="chrome" aria-label="Google Chrome on Performance lane. Click to shift to Efficiency lane.">
+                  <span class="chip-dot dot-red" aria-hidden="true"></span>
+                  <span class="chip-name">Google Chrome</span>
+                  <span class="chip-action">→ E-lane</span>
+                </button>
+                <button type="button" class="app-chip" data-app="slack" aria-label="Slack on Performance lane. Click to shift to Efficiency lane.">
+                  <span class="chip-dot dot-orange" aria-hidden="true"></span>
+                  <span class="chip-name">Slack</span>
+                  <span class="chip-action">→ E-lane</span>
+                </button>
+                <button type="button" class="app-chip" data-app="xcode" aria-label="Xcode on Performance lane. Click to shift to Efficiency lane.">
+                  <span class="chip-dot dot-violet" aria-hidden="true"></span>
+                  <span class="chip-name">Xcode</span>
+                  <span class="chip-action">→ E-lane</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="lanes-transfer-hint" aria-hidden="true">
+              <span class="transfer-arrow">⇄</span>
+              <span class="transfer-text">Click app chip to reroute</span>
+            </div>
+
+            <div class="lane-box lane-e" id="e-lane">
+              <div class="lane-header">
+                <div class="lane-heading">
+                  <span class="lane-tag tag-e">E-LANE</span>
+                  <span class="lane-core-count">4 Efficiency Cores (E0–E3)</span>
+                </div>
+                <span class="lane-caption">Throttled wattage · Minimal battery impact</span>
+              </div>
+              <div class="lane-chip-area" id="e-chips" role="group" aria-label="Apps running on Efficiency cores">
+                <button type="button" class="app-chip" data-app="spotify" aria-label="Spotify on Efficiency lane. Click to shift to Performance lane.">
+                  <span class="chip-dot dot-brown" aria-hidden="true"></span>
+                  <span class="chip-name">Spotify</span>
+                  <span class="chip-action">→ P-lane</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="capabilities-section" id="features">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">What Ohm does</h2>
+        </div>
+
+        <div class="capabilities-grid">
+          <article class="cap-card band-stripe-red">
+            <h3 class="cap-title">Battery receipt</h3>
+            <p class="cap-desc">Minutes and percent per app, per day. Measured, not guessed.</p>
+          </article>
+
+          <article class="cap-card band-stripe-violet">
+            <h3 class="cap-title">Efficiency lane</h3>
+            <p class="cap-desc">One click keeps an app on the E-cores. It switches back when you bring the app to the front.</p>
+          </article>
+
+          <article class="cap-card band-stripe-orange">
+            <h3 class="cap-title">Freeze and thaw</h3>
+            <p class="cap-desc">Hidden apps stop using power entirely. Ohm thaws them the moment you switch to them.</p>
+          </article>
+
+          <article class="cap-card band-stripe-brown">
+            <h3 class="cap-title">Runaway catcher</h3>
+            <p class="cap-desc">&ldquo;node has used 94% CPU for 12 minutes in the background.&rdquo; Act from the notification.</p>
+          </article>
+
+          <article class="cap-card band-stripe-gold">
+            <h3 class="cap-title">Rules in plain words</h3>
+            <p class="cap-desc">Type &ldquo;When battery is under 30%, keep Chrome on efficiency cores.&rdquo; Ohm turns it into a rule, on-device.</p>
+          </article>
+
+          <article class="cap-card band-stripe-film">
+            <h3 class="cap-title">Widget and CLI</h3>
+            <p class="cap-desc"><code class="inline-code">ohm receipt --today</code> in your terminal, today's receipt on your desktop.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="silicon-section" id="silicon">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">Why only Apple Silicon</h2>
+          <p class="section-sub">Ohm uses cores and counters that only Apple Silicon has.</p>
+        </div>
+
+        <div class="silicon-grid">
+          <div class="silicon-card">
+            <h3 class="silicon-heading">Separate performance and efficiency cores</h3>
+            <p class="silicon-body">Your Mac has performance cores and efficiency cores. Ohm can keep an app on the efficiency cores.</p>
+          </div>
+          <div class="silicon-card">
+            <h3 class="silicon-heading">Per-process energy counters in the chip</h3>
+            <p class="silicon-body">The chip counts the energy each process uses. Ohm turns those counts into minutes of battery.</p>
+          </div>
+          <div class="silicon-card">
+            <h3 class="silicon-heading">An on-device language model</h3>
+            <p class="silicon-body">Your sentence becomes a rule right on your Mac. Nothing goes to the cloud.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="privacy-section" id="privacy">
+      <div class="container privacy-container">
+        <div class="privacy-badge">Zero Telemetry</div>
+        <p class="privacy-huge">0 bytes sent.</p>
+        <p class="privacy-statement">
+          Ohm has no account, no analytics and no network access. The only exception is update checks, which you can turn off. The source is on GitHub.
+        </p>
+        <div class="privacy-proof-row">
+          <span class="proof-tag">No Login</span>
+          <span class="proof-tag">No Analytics</span>
+          <span class="proof-tag">No Cloud Backend</span>
+          <span class="proof-tag">Fully Auditable</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="compare-section" id="compare">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">How Ohm compares</h2>
+          <p class="section-sub">Direct comparison with popular Mac activity monitors and power utilities.</p>
+        </div>
+
+        <div class="table-wrap">
+          <table class="compare-table">
+            <caption class="table-caption">Based on each product's public documentation, September 2026.</caption>
+            <thead>
+              <tr>
+                <th scope="col" class="th-feature">Feature</th>
+                <th scope="col">Activity Monitor</th>
+                <th scope="col">Stats</th>
+                <th scope="col">App Tamer</th>
+                <th scope="col" class="th-ohm">Ohm</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row" class="row-feature">Per-app battery minutes</th>
+                <td class="cell-val">–</td>
+                <td class="cell-val">–</td>
+                <td class="cell-val">–</td>
+                <td class="cell-val cell-ohm">✓</td>
+              </tr>
+              <tr>
+                <th scope="row" class="row-feature">Cluster power without admin</th>
+                <td class="cell-val">–</td>
+                <td class="cell-val">–</td>
+                <td class="cell-val">–</td>
+                <td class="cell-val cell-ohm">✓</td>
+              </tr>
+              <tr>
+                <th scope="row" class="row-feature">E-core lane</th>
+                <td class="cell-val">–</td>
+                <td class="cell-val">–</td>
+                <td class="cell-val">✓</td>
+                <td class="cell-val cell-ohm">✓</td>
+              </tr>
+              <tr>
+                <th scope="row" class="row-feature">Freeze &amp; auto-thaw</th>
+                <td class="cell-val">–</td>
+                <td class="cell-val">–</td>
+                <td class="cell-val">✓</td>
+                <td class="cell-val cell-ohm">✓</td>
+              </tr>
+              <tr>
+                <th scope="row" class="row-feature">Rules in plain words</th>
+                <td class="cell-val">–</td>
+                <td class="cell-val">–</td>
+                <td class="cell-val">–</td>
+                <td class="cell-val cell-ohm">✓</td>
+              </tr>
+              <tr>
+                <th scope="row" class="row-feature">Open source</th>
+                <td class="cell-val">–</td>
+                <td class="cell-val">✓</td>
+                <td class="cell-val">–</td>
+                <td class="cell-val cell-ohm">✓</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="faq-section" id="faq">
+      <div class="container faq-container">
+        <div class="section-header">
+          <h2 class="section-title">Frequently asked questions</h2>
+          <p class="section-sub">Honest answers regarding technical implementation and limitations.</p>
+        </div>
+
+        <div class="faq-list">
+          <details class="faq-item">
+            <summary class="faq-question">Why is there an &ldquo;Other&rdquo; row?</summary>
+            <div class="faq-answer">
+              <p>The display and the radios cannot be attributed to a single app, so Ohm shows them separately instead of spreading them across your apps.</p>
+            </div>
+          </details>
+
+          <details class="faq-item">
+            <summary class="faq-question">Does it need admin rights?</summary>
+            <div class="faq-answer">
+              <p>No, not for v1. Ohm reads energy counters via standard macOS telemetry interfaces without root or kernel extensions.</p>
+            </div>
+          </details>
+
+          <details class="faq-item">
+            <summary class="faq-question">Does it work on Intel Macs?</summary>
+            <div class="faq-answer">
+              <p>No, Ohm reads counters that only Apple Silicon has.</p>
+            </div>
+          </details>
+
+          <details class="faq-item">
+            <summary class="faq-question">Will freezing lose my work?</summary>
+            <div class="faq-answer">
+              <p>Ohm never freezes apps playing audio or in a call, and thaws everything if it quits or crashes.</p>
+            </div>
+          </details>
+
+          <details class="faq-item">
+            <summary class="faq-question">What is the price?</summary>
+            <div class="faq-answer">
+              <p>Free and MIT-licensed.</p>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section class="bottom-cta-section">
+      <div class="container cta-box">
+        <h2 class="cta-heading">Take control of Apple Silicon energy</h2>
+        <p class="cta-text">Open source, lightweight menubar monitor. No background bloat, no battery guess work.</p>
+        <div class="cta-actions">
+          <a href="https://github.com/kuarezma/ohm" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
+            Watch releases on GitHub
+          </a>
+          <span class="cta-brew-hint">Or check releases for upcoming v1.0 binary</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div class="footer-left">
+        <div class="footer-brand">
+          <span class="brand-name">ohm</span>
+          <span class="footer-license">MIT License</span>
+        </div>
+        <p class="footer-copy">Built for Apple Silicon Mac users who care where every milliampere goes.</p>
+      </div>
+
+      <div class="footer-right">
+        <nav class="footer-links" aria-label="Footer Links">
+          <a href="https://github.com/kuarezma/ohm" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="https://github.com/kuarezma/ohm#sponsors" target="_blank" rel="noopener noreferrer">Sponsors</a>
+          <a href="./tr/" class="lang-switch" title="Türkçe Sürüm">Türkçe</a>
+          <span class="lang-current" aria-current="true">English</span>
+        </nav>
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
