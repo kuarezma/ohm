@@ -17,7 +17,8 @@ public protocol SystemLoadSampling: AnyObject {
 }
 
 public protocol ComponentSampling: AnyObject {
-    func sample() -> (gpuWatts: Double?, residency: ClusterResidency?, burst: EnergyBurst?)
+    /// `gpuInterval`: the awake time `gpuWatts` was measured over.
+    func sample() -> (gpuWatts: Double?, gpuInterval: Duration?, residency: ClusterResidency?, burst: EnergyBurst?)
 }
 
 public protocol ProcessEnergySampling: AnyObject {

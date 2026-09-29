@@ -142,15 +142,16 @@ public final class IOReportSampler: ComponentSampling {
         IOReportSampler() ?? NullComponentSampler()
     }
 
-    public func sample() -> (gpuWatts: Double?, residency: ClusterResidency?, burst: EnergyBurst?) {
+    public func sample() -> (gpuWatts: Double?, gpuInterval: Duration?, residency: ClusterResidency?,
+                             burst: EnergyBurst?) {
         let reading = readDelta()
-        guard let (r, dt) = reading, dt > 0 else { return (nil, nil, nil) }
+        guard let (r, dt) = reading, dt > 0 else { return (nil, nil, nil, nil) }
         let burst = bursts.observe(r, at: now())
-        return (r.gpuJ.map { $0 / dt }, r.residency, burst)
+        return (r.gpuJ.map { $0 / dt }, r.gpuJ == nil ? nil : .nanoseconds(Int64(dt * 1e9)), r.residency, burst)
     }
 
-    /// Raw decoded delta since the previous call and its length in seconds (also used by the
-    /// GPU-overlap measurement).
+    /// Raw decoded delta since the previous call and its length in awake seconds (mach absolute time,
+    /// which stops during system sleep; also used by the GPU-overlap measurement).
     public func readDelta() -> (IOReportReading, Double)? {
         var dtAbs: UInt64 = 0
         let n = buffer.withUnsafeMutableBufferPointer {
@@ -179,7 +180,8 @@ public final class IOReportSampler: ComponentSampling {
 /// Used when IOReport is missing: no GPU watts, no residency, no bursts.
 public final class NullComponentSampler: ComponentSampling {
     public init() {}
-    public func sample() -> (gpuWatts: Double?, residency: ClusterResidency?, burst: EnergyBurst?) {
-        (nil, nil, nil)
+    public func sample() -> (gpuWatts: Double?, gpuInterval: Duration?, residency: ClusterResidency?,
+                             burst: EnergyBurst?) {
+        (nil, nil, nil, nil)
     }
 }

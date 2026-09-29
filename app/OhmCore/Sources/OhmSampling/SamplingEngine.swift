@@ -1,6 +1,24 @@
+import Darwin
 import Dispatch
 import Foundation
 import OhmModel
+
+/// The two time bases a tick needs, injectable for tests. Nanoseconds since an arbitrary origin.
+public struct SamplingClocks: Sendable {
+    /// Stops during system sleep (mach_absolute_time), like the IOReport and rusage counters' activity.
+    public var awake: @Sendable () -> UInt64
+    /// Keeps running during sleep (mach_continuous_time).
+    public var continuous: @Sendable () -> UInt64
+
+    public init(awake: @escaping @Sendable () -> UInt64, continuous: @escaping @Sendable () -> UInt64) {
+        self.awake = awake
+        self.continuous = continuous
+    }
+
+    public static let system = SamplingClocks(
+        awake: { MachTimebase.current.nanoseconds(mach_absolute_time()) },
+        continuous: { MachTimebase.current.nanoseconds(mach_continuous_time()) })
+}
 
 /// Periodic sampler (ADR 0001 § 3–4). Runs on its own `.utility` serial queue because the samplers
 /// make short blocking syscalls; the non-Sendable samplers are handed over with `sending` and never
@@ -28,16 +46,21 @@ public actor SamplingEngine: SamplingEngineProtocol {
     private let systemLoad: any SystemLoadSampling
     private let battery: any BatterySampling
     private let thermal: @Sendable () -> ThermalLevel
-    private let clock = ContinuousClock()
+    private let clocks: SamplingClocks
+
+    private struct Stamp {
+        var awake: UInt64
+        var continuous: UInt64
+    }
 
     private struct SlowReading {
-        var at: ContinuousClock.Instant
+        var at: UInt64  // continuous ns
         var load: (watts: Double?, source: SystemEnergySource, age: Duration?)
         var battery: BatteryState
     }
 
     private var cadence: SamplingCadence
-    private var lastTick: ContinuousClock.Instant?
+    private var lastTick: Stamp?
     private var slow: SlowReading?
     private var loop: Task<Void, Never>?
     private var sleeper: Task<Void, any Error>?
@@ -49,13 +72,15 @@ public actor SamplingEngine: SamplingEngineProtocol {
                 systemLoad: sending any SystemLoadSampling,
                 battery: sending any BatterySampling,
                 thermal: @escaping @Sendable () -> ThermalLevel = ThermalSampler.current,
-                cadence: SamplingCadence = .ambient) {
+                cadence: SamplingCadence = .ambient,
+                clocks: SamplingClocks = .system) {
         queue = DispatchSerialQueue(label: "dev.ohm.sampling", qos: .utility)
         self.process = process
         self.component = component
         self.systemLoad = systemLoad
         self.battery = battery
         self.thermal = thermal
+        self.clocks = clocks
         self.cadence = cadence
         (ticks, continuation) = AsyncStream.makeStream(of: SampleTick.self, bufferingPolicy: .unbounded)
     }
@@ -109,14 +134,15 @@ public actor SamplingEngine: SamplingEngineProtocol {
             prime()
             return nil
         }
-        let now = clock.now
+        let now = stamp()
         lastTick = now
         let (deltas, unreadable) = process.sample()
         let parts = component.sample()
-        let slowReading = refreshSlowIfDue(now: now)
+        let slowReading = refreshSlowIfDue(now: now.continuous)
         let load = (watts: slowReading.load.watts, source: slowReading.load.source,
-                    age: slowReading.load.age.map { $0 + (now - slowReading.at) })
-        let tick = Self.makeTick(wallClock: Date(), interval: now - last, deltas: deltas,
+                    age: slowReading.load.age.map { $0 + .nanoseconds(Int64(now.continuous &- slowReading.at)) })
+        let (interval, asleep) = Self.split(from: last, to: now)
+        let tick = Self.makeTick(wallClock: Date(), interval: interval, asleep: asleep, deltas: deltas,
                                  unreadable: unreadable, component: parts, systemLoad: load,
                                  battery: slowReading.battery, thermal: thermal())
         tickCount += 1
@@ -127,12 +153,25 @@ public actor SamplingEngine: SamplingEngineProtocol {
     private func prime() {
         _ = process.sample()
         _ = component.sample()
-        lastTick = clock.now
+        lastTick = stamp()
     }
 
-    private func refreshSlowIfDue(now: ContinuousClock.Instant) -> SlowReading {
+    private func stamp() -> Stamp { Stamp(awake: clocks.awake(), continuous: clocks.continuous()) }
+
+    /// Tick span → (measurement interval, time asleep). The interval is awake time: the counters and
+    /// IOReport only advance while awake, and wake power must not be spread over the sleep (T-024 #8).
+    private static func split(from a: Stamp, to b: Stamp) -> (Duration, Duration) {
+        let awake = b.awake >= a.awake ? b.awake - a.awake : 0
+        let wall = b.continuous >= a.continuous ? b.continuous - a.continuous : 0
+        let asleep = wall > awake ? wall - awake : 0
+        return (.nanoseconds(Int64(awake)), .nanoseconds(Int64(asleep)))
+    }
+
+    private func refreshSlowIfDue(now: UInt64) -> SlowReading {
         // Small slack so a 10 s cadence with timer tolerance does not skip every other read.
-        if let slow, now - slow.at < Self.slowReadPeriod - .milliseconds(500) { return slow }
+        if let slow, now >= slow.at, Duration.nanoseconds(Int64(now - slow.at)) < Self.slowReadPeriod - .milliseconds(500) {
+            return slow
+        }
         let fresh = SlowReading(at: now, load: systemLoad.read(), battery: battery.read())
         slow = fresh
         return fresh
@@ -161,9 +200,10 @@ public actor SamplingEngine: SamplingEngineProtocol {
 
     // MARK: Pure assembly
 
-    static func makeTick(wallClock: Date, interval: Duration, deltas: [ProcessDelta],
+    static func makeTick(wallClock: Date, interval: Duration, asleep: Duration = .zero, deltas: [ProcessDelta],
                          unreadable: UnreadableSummary,
-                         component: (gpuWatts: Double?, residency: ClusterResidency?, burst: EnergyBurst?),
+                         component: (gpuWatts: Double?, gpuInterval: Duration?, residency: ClusterResidency?,
+                                     burst: EnergyBurst?),
                          systemLoad: (watts: Double?, source: SystemEnergySource, age: Duration?),
                          battery: BatteryState, thermal: ThermalLevel) -> SampleTick {
         let seconds = Double(interval.components.seconds) + Double(interval.components.attoseconds) / 1e18
@@ -175,8 +215,9 @@ public actor SamplingEngine: SamplingEngineProtocol {
         let power = SystemPower(cpuP: seconds > 0 ? pJ / seconds : 0, cpuE: seconds > 0 ? eJ / seconds : 0,
                                 gpu: component.gpuWatts, systemLoad: systemLoad.watts,
                                 systemLoadAge: systemLoad.age, clusterActive: component.residency,
-                                systemSource: systemLoad.source)
+                                systemSource: systemLoad.source, gpuInterval: component.gpuInterval)
         return SampleTick(wallClock: wallClock, interval: interval, system: power, burst: component.burst,
-                          battery: battery, thermal: thermal, processes: deltas, unreadable: unreadable)
+                          battery: battery, thermal: thermal, processes: deltas, unreadable: unreadable,
+                          asleep: asleep)
     }
 }

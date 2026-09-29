@@ -116,6 +116,49 @@ import Testing
         #expect(src.reads[1] == 2)
     }
 
+    // T-024 #9: a readable process that reuses a pid cached as EPERM must be picked up within the
+    // short retry window and billed from its start, not skipped for minutes and then baselined.
+    @Test func readableProcessReusingDeniedPidIsPickedUpQuickly() {
+        let src = FakeCounterSource()  // timebase 1:1 → clock is nanoseconds
+        src.table[1] = .denied
+        let s = makeSampler(src)
+        _ = s.sample()                                  // root process holds pid 1
+        src.clock += 1_000_000_000
+        src.set(1, energy: 5_000, p: 5_000, start: src.clock)  // it exits; our process reuses pid 1
+        src.clock += 11_000_000_000
+        let (deltas, summary) = s.sample()
+        #expect(summary.readableCount == 1 && summary.unreadableCount == 0)
+        #expect(deltas.map(\.energy_nJ) == [5_000])
+    }
+
+    @Test func energyOfPidReuserIsNotLostWhenFinallyRetried() {
+        let src = FakeCounterSource()
+        src.table[1] = .denied
+        let s = makeSampler(src)
+        _ = s.sample()
+        src.clock += 1_000_000_000
+        src.set(1, energy: 7_000, start: src.clock)
+        var billed: UInt64 = 0
+        for _ in 0..<31 {                               // 10 s ticks past the old 300 s refresh
+            src.clock += 10_000_000_000
+            billed += s.sample().deltas.reduce(0) { $0 + $1.energy_nJ }
+        }
+        #expect(billed == 7_000)
+    }
+
+    @Test func stillDeniedPidCostsNoSyscallWithinRetryWindow() {
+        let src = FakeCounterSource()
+        src.table[1] = .denied
+        let s = makeSampler(src)
+        _ = s.sample()
+        src.clock += 5_000_000_000
+        _ = s.sample()
+        #expect(src.reads[1] == 1)
+        src.clock += 6_000_000_000
+        _ = s.sample()
+        #expect(src.reads[1] == 2)                      // bounded retry after ≥ 10 s
+    }
+
     @Test func goneBetweenListAndReadIsNotCounted() {
         let src = FakeCounterSource()
         src.table[7] = .gone

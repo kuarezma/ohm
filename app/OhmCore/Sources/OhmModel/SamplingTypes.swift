@@ -108,6 +108,8 @@ public struct SystemPower: Sendable, Equatable {
     public var clusterActive: ClusterResidency?
     /// Which source `systemLoad` came from: SystemLoad, or V × I while discharging (ADR 0002 § 5 `sys_src`).
     public var systemSource: SystemEnergySource
+    /// IOReport's own measurement interval for `gpu` (awake time); GPU energy = gpu × gpuInterval.
+    public var gpuInterval: Duration?
 
     public init(
         cpuP: Double,
@@ -116,7 +118,8 @@ public struct SystemPower: Sendable, Equatable {
         systemLoad: Double? = nil,
         systemLoadAge: Duration? = nil,
         clusterActive: ClusterResidency? = nil,
-        systemSource: SystemEnergySource? = nil
+        systemSource: SystemEnergySource? = nil,
+        gpuInterval: Duration? = nil
     ) {
         self.cpuP = cpuP
         self.cpuE = cpuE
@@ -125,6 +128,7 @@ public struct SystemPower: Sendable, Equatable {
         self.systemLoadAge = systemLoadAge
         self.clusterActive = clusterActive
         self.systemSource = systemSource ?? (systemLoad != nil ? .systemLoad : .none)
+        self.gpuInterval = gpuInterval
     }
 }
 
@@ -172,7 +176,11 @@ public struct UnreadableSummary: Sendable, Codable, Equatable {
 
 public struct SampleTick: Sendable {
     public var wallClock: Date
+    /// Awake time since the previous tick (mach_absolute_time; stops during system sleep). Power
+    /// values are averages over this interval, so power × interval is energy (T-024 #8).
     public var interval: Duration
+    /// System sleep inside this tick's span; not part of `interval` (ledger `sampling_gap`, 'sleep').
+    public var asleep: Duration
     public var system: SystemPower
     public var burst: EnergyBurst?
     public var battery: BatteryState
@@ -188,10 +196,12 @@ public struct SampleTick: Sendable {
         battery: BatteryState,
         thermal: ThermalLevel,
         processes: [ProcessDelta],
-        unreadable: UnreadableSummary
+        unreadable: UnreadableSummary,
+        asleep: Duration = .zero
     ) {
         self.wallClock = wallClock
         self.interval = interval
+        self.asleep = asleep
         self.system = system
         self.burst = burst
         self.battery = battery

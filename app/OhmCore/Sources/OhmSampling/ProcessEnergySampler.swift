@@ -128,9 +128,10 @@ public enum ProcessDeltaMath {
 /// Scans every pid each tick and turns cumulative `ri_energy_nj` / `ri_penergy_nj` counters into
 /// attributed per-tick deltas (ADR 0001 § 4, ADR 0002 § 2). Confined to SamplingEngine.
 public final class ProcessEnergySampler: ProcessEnergySampling {
-    /// EPERM pids are not retried until they exit or this much time has passed (ADR 0001 § 4:
-    /// "until the next attribution-cache refresh").
-    public static let deniedRetryInterval: Duration = .seconds(300)
+    /// An EPERM pid is re-read at most this often. Its exit cannot be observed (the pid may be reused
+    /// between two scans without leaving the list), so this bound limits how long a readable process
+    /// that reused the pid goes unseen (T-024 #9).
+    public static let deniedRetryInterval: Duration = .seconds(10)
 
     private struct Tracked {
         var counters: ProcessCounters
@@ -142,9 +143,14 @@ public final class ProcessEnergySampler: ProcessEnergySampling {
     private let timebase: MachTimebase
     private let logger = Logger(subsystem: "dev.ohm", category: "sampling")
 
+    private struct Denied {
+        /// mach time of the last EPERM: the pid was held by an unreadable process at that moment.
+        var confirmedAbs: UInt64
+        var seenInScan: UInt64
+    }
+
     private var tracked: [Int32: Tracked] = [:]
-    private var denied: [Int32: UInt64] = [:]  // pid → scan number of the last EPERM
-    private var deniedRetryAbs: UInt64?
+    private var denied: [Int32: Denied] = [:]
     private var previousSampleAbs: UInt64?
     private var scan: UInt64 = 0
 
@@ -164,7 +170,7 @@ public final class ProcessEnergySampler: ProcessEnergySampling {
     public func sample() -> (deltas: [ProcessDelta], unreadable: UnreadableSummary) {
         scan &+= 1
         let now = source.now()  // before listing: a process starting mid-scan counts as "started"
-        refreshDeniedIfDue(now: now)
+        let retryNs = Self.nanoseconds(Self.deniedRetryInterval)
         let pids = source.listPIDs()
         var deltas: [ProcessDelta] = []
         var readable = 0, unreadable = 0, reads = 0
@@ -172,15 +178,17 @@ public final class ProcessEnergySampler: ProcessEnergySampling {
         live.reserveCapacity(pids.count)
 
         for pid in pids {
-            if denied[pid] != nil {
-                denied[pid] = scan
+            let wasDenied = denied[pid]
+            if let wasDenied, now >= wasDenied.confirmedAbs,
+               timebase.nanoseconds(now - wasDenied.confirmedAbs) < retryNs {
+                denied[pid]?.seenInScan = scan
                 unreadable += 1
                 continue
             }
             reads += 1
             switch source.read(pid) {
             case .denied:
-                denied[pid] = scan
+                denied[pid] = Denied(confirmedAbs: now, seenInScan: scan)
                 unreadable += 1
             case .gone:
                 break
@@ -188,8 +196,12 @@ public final class ProcessEnergySampler: ProcessEnergySampling {
                 readable += 1
                 let identity = ProcessIdentity(pid: pid, startAbsTime: current.startAbs)
                 live.insert(identity)
+                // Readable now but EPERM at `confirmedAbs`: whatever holds the pid started after that
+                // moment was never observable, so its whole counter falls inside Ohm's watch.
+                if wasDenied != nil { denied[pid] = nil }
+                let unseenSince = wasDenied.map { $0.confirmedAbs } ?? previousSampleAbs
                 let (delta, event) = ProcessDeltaMath.step(previous: tracked[pid]?.counters, current: current,
-                                                           previousSampleAbs: previousSampleAbs)
+                                                           previousSampleAbs: unseenSince)
                 tracked[pid] = Tracked(counters: current, seenInScan: scan)
                 if event == .counterReset {
                     counterResets += 1
@@ -207,23 +219,15 @@ public final class ProcessEnergySampler: ProcessEnergySampling {
 
         // Dead pids leave both tables; a reused pid is then retried and gets a fresh identity.
         tracked = tracked.filter { $0.value.seenInScan == scan }
-        denied = denied.filter { $0.value == scan }
+        denied = denied.filter { $0.value.seenInScan == scan }
         resolver.prune(keeping: live)
         previousSampleAbs = now
         lastScanReads = reads
         return (deltas, UnreadableSummary(readableCount: readable, unreadableCount: unreadable))
     }
 
-    private func refreshDeniedIfDue(now: UInt64) {
-        let (seconds, attoseconds) = Self.deniedRetryInterval.components
-        let intervalNs = UInt64(seconds) * 1_000_000_000 + UInt64(attoseconds / 1_000_000_000)
-        guard let since = deniedRetryAbs else {
-            deniedRetryAbs = now
-            return
-        }
-        if now >= since, timebase.nanoseconds(now - since) >= intervalNs {
-            denied.removeAll(keepingCapacity: true)
-            deniedRetryAbs = now
-        }
+    private static func nanoseconds(_ d: Duration) -> UInt64 {
+        let (seconds, attoseconds) = d.components
+        return UInt64(seconds) * 1_000_000_000 + UInt64(attoseconds / 1_000_000_000)
     }
 }

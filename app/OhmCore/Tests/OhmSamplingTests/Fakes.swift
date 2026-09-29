@@ -61,8 +61,27 @@ final class FakeProcessSampler: ProcessEnergySampling {
 }
 
 final class FakeComponent: ComponentSampling {
-    func sample() -> (gpuWatts: Double?, residency: ClusterResidency?, burst: EnergyBurst?) {
-        (0.25, ClusterResidency(pActiveRatio: 0.5, eActiveRatio: 0.25), nil)
+    let gpuWatts: Double
+    let gpuInterval: Duration
+    init(gpuWatts: Double = 0.25, gpuInterval: Duration = .seconds(1)) {
+        self.gpuWatts = gpuWatts
+        self.gpuInterval = gpuInterval
+    }
+    func sample() -> (gpuWatts: Double?, gpuInterval: Duration?, residency: ClusterResidency?, burst: EnergyBurst?) {
+        (gpuWatts, gpuInterval, ClusterResidency(pActiveRatio: 0.5, eActiveRatio: 0.25), nil)
+    }
+}
+
+/// Hand-driven awake and continuous clocks (nanoseconds); `sleep` advances only the continuous one.
+final class FakeClocks: Sendable {
+    private let state = Mutex((awake: UInt64(1_000), continuous: UInt64(1_000)))
+    func run(_ d: Duration) { let ns = Self.ns(d); state.withLock { $0.awake += ns; $0.continuous += ns } }
+    func sleep(_ d: Duration) { let ns = Self.ns(d); state.withLock { $0.continuous += ns } }
+    var sampling: SamplingClocks {
+        SamplingClocks(awake: { self.state.withLock { $0.awake } }, continuous: { self.state.withLock { $0.continuous } })
+    }
+    private static func ns(_ d: Duration) -> UInt64 {
+        UInt64(d.components.seconds) * 1_000_000_000 + UInt64(d.components.attoseconds / 1_000_000_000)
     }
 }
 
