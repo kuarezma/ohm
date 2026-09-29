@@ -90,11 +90,11 @@ function initReceipt() {
   const totalSavedText = document.getElementById('total-saved-text');
 
   const initialRowData = {
-    chrome: { name: 'Google Chrome', minutes: 72, saved: 25, formatted: '1h 12m' },
-    slack: { name: 'Slack', minutes: 38, saved: 13, formatted: '38m' },
-    xcode: { name: 'Xcode', minutes: 27, saved: 9, formatted: '27m' },
-    spotify: { name: 'Spotify', minutes: 9, saved: 3, formatted: '9m' },
-    other: { name: 'Other (display, radios)', minutes: 124, saved: 0, formatted: '2h 04m' }
+    chrome: { name: 'Google Chrome', minutes: 72, saved: 25, formatted: null },
+    slack: { name: 'Slack', minutes: 38, saved: 13, formatted: null },
+    xcode: { name: 'Xcode', minutes: 27, saved: 9, formatted: null },
+    spotify: { name: 'Spotify', minutes: 9, saved: 3, formatted: null },
+    other: { name: 'Other (display, radios)', minutes: 124, saved: 0, formatted: null }
   };
 
   const state = { chrome: false, slack: false, xcode: false, spotify: false };
@@ -115,13 +115,18 @@ function initReceipt() {
     }, footDelay);
   }
 
+  const TR = document.documentElement.lang === 'tr';
+  const U = TR
+    ? { h: ' sa', m: ' dk', min: ' dk', toE: n => `${n} uygulamasını verimlilik çekirdeklerine al`, toP: n => `${n} uygulamasını performans çekirdeklerine geri al` }
+    : { h: 'h', m: 'm', min: ' min', toE: n => `Switch ${n} to efficiency cores`, toP: n => `Move ${n} back to performance cores` };
+
   function formatTime(minutes) {
     if (minutes >= 60) {
       const h = Math.floor(minutes / 60);
       const m = minutes % 60;
-      return `${h}h ${m < 10 ? '0' : ''}${m}m`;
+      return `${h}${U.h} ${m < 10 ? '0' : ''}${m}${U.m}`;
     }
-    return `${minutes}m`;
+    return `${minutes}${U.m}`;
   }
 
   function updateTotal() {
@@ -143,7 +148,7 @@ function initReceipt() {
     if (savingsBanner && totalSavedText) {
       if (totalSaved > 0) {
         savingsBanner.classList.add('active');
-        totalSavedText.textContent = `${totalSaved} min`;
+        totalSavedText.textContent = `${totalSaved}${U.min}`;
       } else {
         savingsBanner.classList.remove('active');
       }
@@ -172,14 +177,14 @@ function initReceipt() {
         if (nextState) {
           const netMinutes = data.minutes - data.saved;
           timeContainer.innerHTML = `
-            <del class="struck-time">${data.formatted}</del>
+            <del class="struck-time">${formatTime(data.minutes)}</del>
             <span class="active-time">${formatTime(netMinutes)}</span>
-            <span class="saved-tag">−${data.saved}m</span>
+            <span class="saved-tag">−${data.saved}${U.m}</span>
           `;
-          btn.setAttribute('aria-label', `Move ${data.name} back to performance cores`);
+          btn.setAttribute('aria-label', U.toP(data.name));
         } else {
-          timeContainer.innerHTML = `<span class="active-time">${data.formatted}</span>`;
-          btn.setAttribute('aria-label', `Switch ${data.name} to efficiency cores`);
+          timeContainer.innerHTML = `<span class="active-time">${formatTime(data.minutes)}</span>`;
+          btn.setAttribute('aria-label', U.toE(data.name));
         }
       }
 

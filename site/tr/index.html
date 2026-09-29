@@ -1,22 +1,22 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ohm — Where did your battery go?</title>
-  <meta name="description" content="Ohm prints a battery receipt for every app on your Apple Silicon Mac and moves power-hungry apps to efficiency cores with one click.">
+  <title>Ohm — Pilin nereye gitti?</title>
+  <meta name="description" content="Ohm, Apple Silicon Mac'inizdeki her uygulama için pil fişi çıkarır ve çok güç tüketen uygulamaları tek tıkla verimlilik çekirdeklerine taşır.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%23C4382C' stroke-width='4'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23C4382C'/%3E%3C/svg%3E">
-  <link rel="alternate" hreflang="en" href="./">
-  <link rel="alternate" hreflang="tr" href="tr/">
+  <link rel="alternate" hreflang="tr" href="./">
+  <link rel="alternate" hreflang="en" href="../">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@800&family=Hanken+Grotesk:wght@400;600&family=Martian+Mono:wght@400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="../styles.css">
 </head>
 <body>
   <header class="site-header">
     <div class="header-inner container">
-      <a href="./" class="nav-brand" aria-label="Ohm home">
+      <a href="./" class="nav-brand" aria-label="Ohm ana sayfa">
         <span class="brand-resistor" aria-hidden="true">
           <span class="resistor-cap"></span>
           <span class="resistor-body">
@@ -30,19 +30,19 @@
         <span class="brand-name">ohm</span>
       </a>
 
-      <nav class="nav-links" aria-label="Main Navigation">
-        <a href="#lanes">Lanes</a>
-        <a href="#features">Features</a>
-        <a href="#silicon">Why M-Series</a>
-        <a href="#privacy">Privacy</a>
-        <a href="#compare">Compare</a>
-        <a href="#faq">FAQ</a>
+      <nav class="nav-links" aria-label="Ana Gezinti">
+        <a href="#lanes">Hatlar</a>
+        <a href="#features">Özellikler</a>
+        <a href="#silicon">Neden Apple Silicon</a>
+        <a href="#privacy">Gizlilik</a>
+        <a href="#compare">Karşılaştırma</a>
+        <a href="#faq">SSS</a>
       </nav>
 
       <div class="nav-actions">
-        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle dark/light theme">
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Koyu/açık temayı değiştir">
           <span class="theme-icon" aria-hidden="true">◑</span>
-          <span class="theme-text">Theme</span>
+          <span class="theme-text">Tema</span>
         </button>
         <a href="https://github.com/kuarezma/ohm" class="nav-gh-link" target="_blank" rel="noopener noreferrer">
           GitHub <span class="star-icon" aria-hidden="true">★</span>
@@ -55,31 +55,31 @@
     <section class="hero-section">
       <div class="container hero-grid">
         <div class="hero-content">
-          <div class="hero-badge">Apple Silicon Menubar Utility</div>
-          <h1 class="hero-title">Where did your battery go?</h1>
+          <div class="hero-badge">Apple Silicon Menü Çubuğu Aracı</div>
+          <h1 class="hero-title">Pilin nereye gitti?</h1>
           <p class="hero-sub">
-            Ohm prints a receipt for every app on your Mac: how many minutes of battery it cost you today. One click moves a hungry app to the efficiency cores or freezes it until you come back.
+            Ohm, Mac'inizdeki her uygulama için bugün size kaç dakika pile mâl olduğunu gösteren bir fiş çıkarır. Tek tıkla çok güç harcayan bir uygulamayı verimlilik çekirdeklerine taşıyabilir veya siz geri dönene kadar dondurabilirsiniz.
           </p>
 
           <div class="hero-cta-group">
             <a href="https://github.com/kuarezma/ohm" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
-              Watch releases on GitHub
+              GitHub'da sürümleri takip et
             </a>
             <div class="install-card">
               <div class="install-header">
-                <span class="install-tag">Available with v1.0</span>
+                <span class="install-tag">v1.0 ile gelecek</span>
               </div>
               <div class="install-cli">
                 <code id="brew-code">brew install --cask ohm</code>
-                <button type="button" class="btn-copy" id="btn-copy" aria-label="Copy brew install command">
-                  <span id="copy-status">Copy</span>
+                <button type="button" class="btn-copy" id="btn-copy" aria-label="brew install komutunu kopyala">
+                  <span id="copy-status">Kopyala</span>
                 </button>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="hero-demo" aria-label="Live interactive Ohm preview">
+        <div class="hero-demo" aria-label="Canlı etkileşimli Ohm önizlemesi">
           <div class="menubar-strip">
             <div class="menubar-left">
               <svg class="ring-icon" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
@@ -97,13 +97,13 @@
 
           <div class="popover-panel">
             <div class="popover-meta">
-              <span class="popover-device">Apple Silicon M3 · 8 Cores</span>
-              <span class="popover-tag">Live</span>
+              <span class="popover-device">Apple Silicon M3 · 8 Çekirdek</span>
+              <span class="popover-tag">Canlı</span>
             </div>
             <div class="cluster-bars">
               <div class="cluster-row">
                 <div class="cluster-info">
-                  <span class="cluster-name">P-Cluster (4 cores)</span>
+                  <span class="cluster-name">P-Kümesi (4 çekirdek)</span>
                   <span class="cluster-w" id="p-cluster-val">5.3 W</span>
                 </div>
                 <div class="bar-track">
@@ -112,7 +112,7 @@
               </div>
               <div class="cluster-row">
                 <div class="cluster-info">
-                  <span class="cluster-name">E-Cluster (4 cores)</span>
+                  <span class="cluster-name">E-Kümesi (4 çekirdek)</span>
                   <span class="cluster-w" id="e-cluster-val">2.1 W</span>
                 </div>
                 <div class="bar-track">
@@ -129,15 +129,15 @@
           <div class="receipt-container">
             <div class="receipt-paper" id="receipt-paper">
               <div class="receipt-head">
-                <p class="receipt-logo">BATTERY RECEIPT</p>
+                <p class="receipt-logo">PİL FİŞİ</p>
                 <div class="receipt-meta-line">
-                  <span>TODAY'S USAGE</span>
-                  <span>BATTERY</span>
+                  <span>BUGÜNKÜ KULLANIM</span>
+                  <span>PİL</span>
                 </div>
                 <div class="receipt-rule" aria-hidden="true">================================</div>
               </div>
 
-              <div class="receipt-rows" role="table" aria-label="Per-app battery minutes receipt">
+              <div class="receipt-rows" role="table" aria-label="Uygulama başına pil dakikası fişi">
                 <div class="receipt-row" data-app="chrome" data-minutes="72" data-saved="25" role="row">
                   <div class="row-left" role="cell">
                     <span class="resistor-stripe stripe-red" aria-hidden="true"></span>
@@ -145,9 +145,9 @@
                   </div>
                   <div class="row-right" role="cell">
                     <span class="time-display" id="time-chrome">
-                      <span class="active-time">1h 12m</span>
+                      <span class="active-time">1 sa 12 dk</span>
                     </span>
-                    <button type="button" class="btn-e" data-app="chrome" aria-label="Switch Google Chrome to efficiency cores" aria-pressed="false">E</button>
+                    <button type="button" class="btn-e" data-app="chrome" aria-label="Google Chrome uygulamasını verimlilik çekirdeklerine geçir" aria-pressed="false">E</button>
                   </div>
                 </div>
 
@@ -158,9 +158,9 @@
                   </div>
                   <div class="row-right" role="cell">
                     <span class="time-display" id="time-slack">
-                      <span class="active-time">38m</span>
+                      <span class="active-time">38 dk</span>
                     </span>
-                    <button type="button" class="btn-e" data-app="slack" aria-label="Switch Slack to efficiency cores" aria-pressed="false">E</button>
+                    <button type="button" class="btn-e" data-app="slack" aria-label="Slack uygulamasını verimlilik çekirdeklerine geçir" aria-pressed="false">E</button>
                   </div>
                 </div>
 
@@ -171,9 +171,9 @@
                   </div>
                   <div class="row-right" role="cell">
                     <span class="time-display" id="time-xcode">
-                      <span class="active-time">27m</span>
+                      <span class="active-time">27 dk</span>
                     </span>
-                    <button type="button" class="btn-e" data-app="xcode" aria-label="Switch Xcode to efficiency cores" aria-pressed="false">E</button>
+                    <button type="button" class="btn-e" data-app="xcode" aria-label="Xcode uygulamasını verimlilik çekirdeklerine geçir" aria-pressed="false">E</button>
                   </div>
                 </div>
 
@@ -184,20 +184,20 @@
                   </div>
                   <div class="row-right" role="cell">
                     <span class="time-display" id="time-spotify">
-                      <span class="active-time">9m</span>
+                      <span class="active-time">9 dk</span>
                     </span>
-                    <button type="button" class="btn-e" data-app="spotify" aria-label="Switch Spotify to efficiency cores" aria-pressed="false">E</button>
+                    <button type="button" class="btn-e" data-app="spotify" aria-label="Spotify uygulamasını verimlilik çekirdeklerine geçir" aria-pressed="false">E</button>
                   </div>
                 </div>
 
                 <div class="receipt-row row-other" role="row">
                   <div class="row-left" role="cell">
                     <span class="resistor-stripe stripe-gold" aria-hidden="true"></span>
-                    <span class="app-title">Other (display, radios)</span>
+                    <span class="app-title">Diğer (ekran, radyolar)</span>
                   </div>
                   <div class="row-right" role="cell">
                     <span class="time-display">
-                      <span class="active-time">2h 04m</span>
+                      <span class="active-time">2 sa 04 dk</span>
                     </span>
                     <span class="btn-placeholder" aria-hidden="true"></span>
                   </div>
@@ -207,11 +207,11 @@
               <div class="receipt-foot">
                 <div class="receipt-rule" aria-hidden="true">--------------------------------</div>
                 <div class="receipt-total" aria-live="polite" id="receipt-total-container">
-                  <span class="total-caption">TOTAL BATTERY COST</span>
-                  <span class="total-number" id="receipt-total-value">4h 30m</span>
+                  <span class="total-caption">TOPLAM PİL BEDELİ</span>
+                  <span class="total-number" id="receipt-total-value">4 sa 30 dk</span>
                 </div>
                 <div class="receipt-savings-banner" id="receipt-savings-banner" aria-hidden="true">
-                  <span class="savings-text">E-core saving active: <strong id="total-saved-text">0m</strong> extended</span>
+                  <span class="savings-text">E-core tasarrufu devrede: <strong id="total-saved-text">0 dk</strong> uzatıldı</span>
                 </div>
                 <div class="receipt-barcode" aria-hidden="true">
                   || | | |||| || | || |||| | ||| | || ||||
@@ -227,32 +227,32 @@
     <section class="lanes-section" id="lanes">
       <div class="container">
         <div class="section-header">
-          <h2 class="section-title">Your M-series chip has two kinds of cores. Ohm lets you choose which ones an app gets.</h2>
-          <p class="section-sub">Move an app to the efficiency cores. It keeps running, just slower and cooler.</p>
+          <h2 class="section-title">M serisi çipinizde iki tür çekirdek bulunur. Ohm, bir uygulamanın hangisini alacağını seçmenizi sağlar.</h2>
+          <p class="section-sub">Uygulamayı verimlilik çekirdeklerine taşıyın. Çalışmaya devam eder, yalnızca daha yavaş ve daha serin.</p>
         </div>
 
-        <div class="lanes-interactive-board" aria-label="Interactive CPU Core Lanes">
+        <div class="lanes-interactive-board" aria-label="Etkileşimli CPU çekirdek hatları">
           <div class="lanes-grid">
             <div class="lane-box lane-p" id="p-lane">
               <div class="lane-header">
                 <div class="lane-heading">
-                  <span class="lane-tag tag-p">P-LANE</span>
-                  <span class="lane-core-count">4 Performance Cores (P0–P3)</span>
+                  <span class="lane-tag tag-p">P-HATTI</span>
+                  <span class="lane-core-count">4 Performans Çekirdeği (P0–P3)</span>
                 </div>
-                <span class="lane-caption">Full frequency · Higher thermal output</span>
+                <span class="lane-caption">Tam frekans · Daha yüksek ısı üretimi</span>
               </div>
-              <div class="lane-chip-area" id="p-chips" role="group" aria-label="Apps running on Performance cores">
-                <button type="button" class="app-chip" data-app="chrome" aria-label="Google Chrome on Performance lane. Click to shift to Efficiency lane.">
+              <div class="lane-chip-area" id="p-chips" role="group" aria-label="Performans çekirdeklerinde çalışan uygulamalar">
+                <button type="button" class="app-chip" data-app="chrome" aria-label="Performans hattındaki Google Chrome. Verimlilik hattına geçirmek için tıklayın.">
                   <span class="chip-dot dot-red" aria-hidden="true"></span>
                   <span class="chip-name">Google Chrome</span>
                   <span class="chip-action">→ E-lane</span>
                 </button>
-                <button type="button" class="app-chip" data-app="slack" aria-label="Slack on Performance lane. Click to shift to Efficiency lane.">
+                <button type="button" class="app-chip" data-app="slack" aria-label="Performans hattındaki Slack. Verimlilik hattına geçirmek için tıklayın.">
                   <span class="chip-dot dot-orange" aria-hidden="true"></span>
                   <span class="chip-name">Slack</span>
                   <span class="chip-action">→ E-lane</span>
                 </button>
-                <button type="button" class="app-chip" data-app="xcode" aria-label="Xcode on Performance lane. Click to shift to Efficiency lane.">
+                <button type="button" class="app-chip" data-app="xcode" aria-label="Performans hattındaki Xcode. Verimlilik hattına geçirmek için tıklayın.">
                   <span class="chip-dot dot-violet" aria-hidden="true"></span>
                   <span class="chip-name">Xcode</span>
                   <span class="chip-action">→ E-lane</span>
@@ -262,19 +262,19 @@
 
             <div class="lanes-transfer-hint" aria-hidden="true">
               <span class="transfer-arrow">⇄</span>
-              <span class="transfer-text">Click app chip to reroute</span>
+              <span class="transfer-text">Yönlendirmek için uygulama kartına tıklayın</span>
             </div>
 
             <div class="lane-box lane-e" id="e-lane">
               <div class="lane-header">
                 <div class="lane-heading">
-                  <span class="lane-tag tag-e">E-LANE</span>
-                  <span class="lane-core-count">4 Efficiency Cores (E0–E3)</span>
+                  <span class="lane-tag tag-e">E-HATTI</span>
+                  <span class="lane-core-count">4 Verimlilik Çekirdeği (E0–E3)</span>
                 </div>
-                <span class="lane-caption">Throttled wattage · Minimal battery impact</span>
+                <span class="lane-caption">Düşük watt · Minimum pil etkisi</span>
               </div>
-              <div class="lane-chip-area" id="e-chips" role="group" aria-label="Apps running on Efficiency cores">
-                <button type="button" class="app-chip" data-app="spotify" aria-label="Spotify on Efficiency lane. Click to shift to Performance lane.">
+              <div class="lane-chip-area" id="e-chips" role="group" aria-label="Verimlilik çekirdeklerinde çalışan uygulamalar">
+                <button type="button" class="app-chip" data-app="spotify" aria-label="Verimlilik hattındaki Spotify. Performans hattına geçirmek için tıklayın.">
                   <span class="chip-dot dot-brown" aria-hidden="true"></span>
                   <span class="chip-name">Spotify</span>
                   <span class="chip-action">→ P-lane</span>
@@ -289,38 +289,38 @@
     <section class="capabilities-section" id="features">
       <div class="container">
         <div class="section-header">
-          <h2 class="section-title">What Ohm does</h2>
+          <h2 class="section-title">Ohm neler yapar</h2>
         </div>
 
         <div class="capabilities-grid">
           <article class="cap-card band-stripe-red">
-            <h3 class="cap-title">Battery receipt</h3>
-            <p class="cap-desc">Minutes and percent per app, per day. Measured, not guessed.</p>
+            <h3 class="cap-title">Pil fişi</h3>
+            <p class="cap-desc">Uygulama başına günlük dakika ve yüzde. Tahmin değil, ölçüm.</p>
           </article>
 
           <article class="cap-card band-stripe-violet">
-            <h3 class="cap-title">Efficiency lane</h3>
-            <p class="cap-desc">One click keeps an app on the E-cores. It switches back when you bring the app to the front.</p>
+            <h3 class="cap-title">Verimlilik hattı</h3>
+            <p class="cap-desc">Tek tıkla uygulamayı E-core'larda tutun. Uygulamayı öne getirdiğinizde kendiliğinden geri döner.</p>
           </article>
 
           <article class="cap-card band-stripe-orange">
-            <h3 class="cap-title">Freeze and thaw</h3>
-            <p class="cap-desc">Hidden apps stop using power entirely. Ohm thaws them the moment you switch to them.</p>
+            <h3 class="cap-title">Dondur ve çöz</h3>
+            <p class="cap-desc">Gizlenen uygulamalar güç tüketmeyi tamamen durdurur. Ohm, uygulamaya geçtiğiniz anda onu çözer.</p>
           </article>
 
           <article class="cap-card band-stripe-brown">
-            <h3 class="cap-title">Runaway catcher</h3>
-            <p class="cap-desc">&ldquo;node has used 94% CPU for 12 minutes in the background.&rdquo; Act from the notification.</p>
+            <h3 class="cap-title">Kaçak yakalayıcı</h3>
+            <p class="cap-desc">&ldquo;node arka planda 12 dakikadır %94 CPU kullanıyor.&rdquo; Bildirimden hemen müdahale edin.</p>
           </article>
 
           <article class="cap-card band-stripe-gold">
-            <h3 class="cap-title">Rules in plain words</h3>
-            <p class="cap-desc">Type &ldquo;When battery is under 30%, keep Chrome on efficiency cores.&rdquo; Ohm turns it into a rule, on-device.</p>
+            <h3 class="cap-title">Düz metinle kurallar</h3>
+            <p class="cap-desc">&ldquo;Pil %30'un altına indiğinde Chrome'u verimlilik çekirdeklerinde tut.&rdquo; yazın; Ohm cihazınızda kurala dönüştürsün.</p>
           </article>
 
           <article class="cap-card band-stripe-film">
-            <h3 class="cap-title">Widget and CLI</h3>
-            <p class="cap-desc"><code class="inline-code">ohm receipt --today</code> in your terminal, today's receipt on your desktop.</p>
+            <h3 class="cap-title">Widget ve CLI</h3>
+            <p class="cap-desc">Terminalinizde <code class="inline-code">ohm receipt --today</code>, masaüstünüzde bugünün fişi.</p>
           </article>
         </div>
       </div>
@@ -329,22 +329,22 @@
     <section class="silicon-section" id="silicon">
       <div class="container">
         <div class="section-header">
-          <h2 class="section-title">Why only Apple Silicon</h2>
-          <p class="section-sub">Ohm uses cores and counters that only Apple Silicon has.</p>
+          <h2 class="section-title">Neden yalnızca Apple Silicon</h2>
+          <p class="section-sub">Ohm, yalnızca Apple Silicon çiplere özgü çekirdekleri ve sayaçları kullanır.</p>
         </div>
 
         <div class="silicon-grid">
           <div class="silicon-card">
-            <h3 class="silicon-heading">Separate performance and efficiency cores</h3>
-            <p class="silicon-body">Your Mac has performance cores and efficiency cores. Ohm can keep an app on the efficiency cores.</p>
+            <h3 class="silicon-heading">Ayrık performans ve verimlilik çekirdekleri</h3>
+            <p class="silicon-body">Mac'inizde performans çekirdekleri ve verimlilik çekirdekleri bulunur. Ohm, bir uygulamayı verimlilik çekirdeklerinde tutabilir.</p>
           </div>
           <div class="silicon-card">
-            <h3 class="silicon-heading">Per-process energy counters in the chip</h3>
-            <p class="silicon-body">The chip counts the energy each process uses. Ohm turns those counts into minutes of battery.</p>
+            <h3 class="silicon-heading">Çip içinde süreç başına enerji sayaçları</h3>
+            <p class="silicon-body">Çip, her sürecin harcadığı enerjiyi sayar. Ohm bu sayıları pil dakikasına dönüştürür.</p>
           </div>
           <div class="silicon-card">
-            <h3 class="silicon-heading">An on-device language model</h3>
-            <p class="silicon-body">Your sentence becomes a rule right on your Mac. Nothing goes to the cloud.</p>
+            <h3 class="silicon-heading">Cihaz üzerinde çalışan dil modeli</h3>
+            <p class="silicon-body">Cümleniz doğrudan Mac'inizde kural haline gelir. Buluta hiçbir şey gönderilmez.</p>
           </div>
         </div>
       </div>
@@ -352,16 +352,16 @@
 
     <section class="privacy-section" id="privacy">
       <div class="container privacy-container">
-        <div class="privacy-badge">Zero Telemetry</div>
-        <p class="privacy-huge">0 bytes sent.</p>
+        <div class="privacy-badge">Sıfır Telemetri</div>
+        <p class="privacy-huge">0 bayt gönderildi.</p>
         <p class="privacy-statement">
-          Ohm has no account, no analytics and no network access. The only exception is update checks, which you can turn off. The source is on GitHub.
+          Ohm'da hesap, analiz veya ağ erişimi yoktur. Tek istisna, kapatabileceğiniz güncelleme denetimidir. Kaynak kodları GitHub'dadır.
         </p>
         <div class="privacy-proof-row">
-          <span class="proof-tag">No Login</span>
-          <span class="proof-tag">No Analytics</span>
-          <span class="proof-tag">No Cloud Backend</span>
-          <span class="proof-tag">Fully Auditable</span>
+          <span class="proof-tag">Giriş Yok</span>
+          <span class="proof-tag">Analiz Yok</span>
+          <span class="proof-tag">Bulut Sunucusu Yok</span>
+          <span class="proof-tag">Tamamen Denetlenebilir</span>
         </div>
       </div>
     </section>
@@ -369,16 +369,16 @@
     <section class="compare-section" id="compare">
       <div class="container">
         <div class="section-header">
-          <h2 class="section-title">How Ohm compares</h2>
-          <p class="section-sub">Direct comparison with popular Mac activity monitors and power utilities.</p>
+          <h2 class="section-title">Ohm ve diğerleri</h2>
+          <p class="section-sub">Popüler Mac etkinlik monitörleri ve güç araçlarıyla doğrudan karşılaştırma.</p>
         </div>
 
         <div class="table-wrap">
           <table class="compare-table">
-            <caption class="table-caption">Based on each product's public documentation, September 2026.</caption>
+            <caption class="table-caption">Eylül 2026 itibarıyla her ürünün herkese açık belgelerine dayanmaktadır.</caption>
             <thead>
               <tr>
-                <th scope="col" class="th-feature">Feature</th>
+                <th scope="col" class="th-feature">Özellik</th>
                 <th scope="col">Activity Monitor</th>
                 <th scope="col">Stats</th>
                 <th scope="col">App Tamer</th>
@@ -387,42 +387,42 @@
             </thead>
             <tbody>
               <tr>
-                <th scope="row" class="row-feature">Per-app battery minutes</th>
+                <th scope="row" class="row-feature">Uygulama başına pil dakikası</th>
                 <td class="cell-val">–</td>
                 <td class="cell-val">–</td>
                 <td class="cell-val">–</td>
                 <td class="cell-val cell-ohm">✓</td>
               </tr>
               <tr>
-                <th scope="row" class="row-feature">Cluster power without admin</th>
+                <th scope="row" class="row-feature">Yönetici yetkisi olmadan küme gücü</th>
                 <td class="cell-val">–</td>
                 <td class="cell-val">–</td>
                 <td class="cell-val">–</td>
                 <td class="cell-val cell-ohm">✓</td>
               </tr>
               <tr>
-                <th scope="row" class="row-feature">E-core lane</th>
+                <th scope="row" class="row-feature">E-core hattı</th>
                 <td class="cell-val">–</td>
                 <td class="cell-val">–</td>
                 <td class="cell-val">✓</td>
                 <td class="cell-val cell-ohm">✓</td>
               </tr>
               <tr>
-                <th scope="row" class="row-feature">Freeze &amp; auto-thaw</th>
+                <th scope="row" class="row-feature">Dondurma ve otomatik çözme</th>
                 <td class="cell-val">–</td>
                 <td class="cell-val">–</td>
                 <td class="cell-val">✓</td>
                 <td class="cell-val cell-ohm">✓</td>
               </tr>
               <tr>
-                <th scope="row" class="row-feature">Rules in plain words</th>
+                <th scope="row" class="row-feature">Düz metinle kurallar</th>
                 <td class="cell-val">–</td>
                 <td class="cell-val">–</td>
                 <td class="cell-val">–</td>
                 <td class="cell-val cell-ohm">✓</td>
               </tr>
               <tr>
-                <th scope="row" class="row-feature">Open source</th>
+                <th scope="row" class="row-feature">Açık kaynak</th>
                 <td class="cell-val">–</td>
                 <td class="cell-val">✓</td>
                 <td class="cell-val">–</td>
@@ -437,43 +437,43 @@
     <section class="faq-section" id="faq">
       <div class="container faq-container">
         <div class="section-header">
-          <h2 class="section-title">Frequently asked questions</h2>
-          <p class="section-sub">Honest answers regarding technical implementation and limitations.</p>
+          <h2 class="section-title">Sıkça sorulan sorular</h2>
+          <p class="section-sub">Teknik uygulama ve kısıtlamalar hakkında dürüst yanıtlar.</p>
         </div>
 
         <div class="faq-list">
           <details class="faq-item">
-            <summary class="faq-question">Why is there an &ldquo;Other&rdquo; row?</summary>
+            <summary class="faq-question">Neden bir &ldquo;Diğer&rdquo; satırı var?</summary>
             <div class="faq-answer">
-              <p>The display and the radios cannot be attributed to a single app, so Ohm shows them separately instead of spreading them across your apps.</p>
+              <p>Ekran ve kablosuz bağlantılar tek bir uygulamaya atanamaz; bu yüzden Ohm bunları uygulamalara paylaştırmak yerine ayrı gösterir.</p>
             </div>
           </details>
 
           <details class="faq-item">
-            <summary class="faq-question">Does it need admin rights?</summary>
+            <summary class="faq-question">Yönetici yetkisi gerekir mi?</summary>
             <div class="faq-answer">
-              <p>No, not for v1. Ohm reads the energy counters of your own apps without root, a helper or a kernel extension.</p>
+              <p>Hayır, v1 için gerekmez. Ohm, kendi uygulamalarınızın enerji sayaçlarını root yetkisi, yardımcı araç veya çekirdek eklentisi olmadan okur.</p>
             </div>
           </details>
 
           <details class="faq-item">
-            <summary class="faq-question">Does it work on Intel Macs?</summary>
+            <summary class="faq-question">Intel Mac'lerde çalışır mı?</summary>
             <div class="faq-answer">
-              <p>No, Ohm reads counters that only Apple Silicon has.</p>
+              <p>Hayır, Ohm yalnızca Apple Silicon'da bulunan sayaçları okur.</p>
             </div>
           </details>
 
           <details class="faq-item">
-            <summary class="faq-question">Will freezing lose my work?</summary>
+            <summary class="faq-question">Dondurma işlemi çalışmalarımı kaybettirir mi?</summary>
             <div class="faq-answer">
-              <p>Ohm never freezes apps playing audio or in a call, and thaws everything if it quits or crashes.</p>
+              <p>Ohm ses çalan veya aramada olan uygulamaları asla dondurmaz; kapandığında veya çöktüğünde her şeyi çözer.</p>
             </div>
           </details>
 
           <details class="faq-item">
-            <summary class="faq-question">What is the price?</summary>
+            <summary class="faq-question">Fiyatı nedir?</summary>
             <div class="faq-answer">
-              <p>Free and MIT-licensed.</p>
+              <p>Ücretsiz ve MIT lisanslı.</p>
             </div>
           </details>
         </div>
@@ -482,13 +482,13 @@
 
     <section class="bottom-cta-section">
       <div class="container cta-box">
-        <h2 class="cta-heading">Take control of Apple Silicon energy</h2>
-        <p class="cta-text">Open source and light: Ohm itself runs on the efficiency cores and sends nothing anywhere.</p>
+        <h2 class="cta-heading">Apple Silicon enerjisinin kontrolünü elinize alın</h2>
+        <p class="cta-text">Açık kaynaklı ve hafif: Ohm'un kendisi verimlilik çekirdeklerinde çalışır ve hiçbir yere veri göndermez.</p>
         <div class="cta-actions">
           <a href="https://github.com/kuarezma/ohm" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
-            Watch releases on GitHub
+            GitHub'da sürümleri takip et
           </a>
-          <span class="cta-brew-hint">Or check releases for upcoming v1.0 binary</span>
+          <span class="cta-brew-hint">Veya yakında çıkacak v1.0 ikili dosyası için sürümleri inceleyin</span>
         </div>
       </div>
     </section>
@@ -499,22 +499,22 @@
       <div class="footer-left">
         <div class="footer-brand">
           <span class="brand-name">ohm</span>
-          <span class="footer-license">MIT License</span>
+          <span class="footer-license">MIT Lisansı</span>
         </div>
-        <p class="footer-copy">MIT licensed. Made for people who want to know where their battery went.</p>
+        <p class="footer-copy">MIT lisanslı. Pilinin nereye gittiğini merak edenler için.</p>
       </div>
 
       <div class="footer-right">
-        <nav class="footer-links" aria-label="Footer Links">
+        <nav class="footer-links" aria-label="Altbilgi Bağlantıları">
           <a href="https://github.com/kuarezma/ohm" target="_blank" rel="noopener noreferrer">GitHub</a>
           <a href="https://github.com/kuarezma/ohm#sponsors" target="_blank" rel="noopener noreferrer">Sponsors</a>
-          <a href="./tr/" class="lang-switch" title="Türkçe Sürüm">Türkçe</a>
-          <span class="lang-current" aria-current="true">English</span>
+          <a href="../" class="lang-switch" title="English">English</a>
+          <span class="lang-current" aria-current="true">Türkçe</span>
         </nav>
       </div>
     </div>
   </footer>
 
-  <script src="app.js"></script>
+  <script src="../app.js"></script>
 </body>
 </html>
