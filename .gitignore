@@ -5,3 +5,4 @@ DerivedData/
 .build/
 *.xcuserstate
 spikes/bin/
+.agy-staff/
