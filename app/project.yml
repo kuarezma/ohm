@@ -1,0 +1,139 @@
+name: Ohm
+options:
+  bundleIdPrefix: dev.ohm
+  deploymentTarget:
+    macOS: "26.0"
+
+settings:
+  base:
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    SWIFT_VERSION: "6.0"
+  configs:
+    Debug:
+      CODE_SIGN_IDENTITY: "-"
+
+packages:
+  OhmCore:
+    path: OhmCore
+  swift-argument-parser:
+    url: https://github.com/apple/swift-argument-parser
+    from: "1.5.0"
+
+targets:
+  Ohm:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: OhmApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ohm.Ohm
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: OhmApp/Ohm.entitlements
+    info:
+      path: OhmApp/Info.plist
+      properties:
+        CFBundlePackageType: APPL
+        CFBundleIdentifier: dev.ohm.Ohm
+        CFBundleName: Ohm
+        CFBundleExecutable: Ohm
+        CFBundleShortVersionString: "0.0.1"
+        CFBundleVersion: "1"
+        LSUIElement: true
+    dependencies:
+      - package: OhmCore
+        product: OhmModel
+      - package: OhmCore
+        product: COhmSys
+      - package: OhmCore
+        product: OhmSampling
+      - package: OhmCore
+        product: OhmLedger
+      - package: OhmCore
+        product: OhmJournal
+      - package: OhmCore
+        product: OhmGovernor
+      - package: OhmCore
+        product: OhmRules
+      - package: OhmCore
+        product: OhmForecast
+      - package: OhmCore
+        product: OhmControl
+      - target: OhmWidget
+      - target: ohm
+        embed: true
+        link: false
+        copy:
+          destination: executables
+      - target: ohm-thawd
+        embed: true
+        link: false
+        copy:
+          destination: executables
+
+  OhmWidget:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: OhmWidget
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ohm.Ohm.widget
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: OhmWidget/OhmWidget.entitlements
+    info:
+      path: OhmWidget/Info.plist
+      properties:
+        CFBundlePackageType: XPC!
+        CFBundleIdentifier: dev.ohm.Ohm.widget
+        CFBundleName: OhmWidget
+        CFBundleExecutable: OhmWidget
+        CFBundleShortVersionString: "0.0.1"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    dependencies:
+      - package: OhmCore
+        product: OhmModel
+      - package: OhmCore
+        product: OhmLedger
+
+  ohm:
+    type: tool
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: ohm
+    settings:
+      base:
+        PRODUCT_NAME: ohm
+    dependencies:
+      - package: OhmCore
+        product: OhmModel
+      - package: OhmCore
+        product: OhmLedger
+      - package: OhmCore
+        product: OhmControl
+      - package: OhmCore
+        product: OhmJournal
+      - package: swift-argument-parser
+        product: ArgumentParser
+
+  ohm-thawd:
+    type: tool
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: ohm-thawd
+    settings:
+      base:
+        PRODUCT_NAME: ohm-thawd
+    dependencies:
+      - package: OhmCore
+        product: OhmJournal
+      - package: OhmCore
+        product: COhmSys
