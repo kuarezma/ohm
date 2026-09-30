@@ -46,7 +46,7 @@ struct OhmLedgerTests {
         // Schema creation from empty
         let ledger = try EnergyLedger(path: path)
         let version = try await ledger.userVersion()
-        #expect(version == 1, "PRAGMA user_version must equal 1 per ADR 0002 §3")
+        #expect(version == 2, "T-027 adds migration 2 without modifying migration 1")
 
         // Reader compat: reader with current version opens normally
         let reader = try LedgerReader(path: path)
@@ -215,6 +215,11 @@ struct OhmLedgerTests {
 
         let ledger = try EnergyLedger(path: path)
         let t_min: Int64 = 500
+        // Ten minutes of today's battery reference, outside the requested receipt slice.
+        for minute in 491..<500 {
+            try await ledger.recordRawSystemMinute(t_min: Int64(minute), source: .battery,
+                covered_ms: 60_000, sysload_uj: 60_000_000, sysload_cov_ms: 60_000)
+        }
         let appKey = AppKey(kind: .bundleID, value: "com.example.App")
 
         try await ledger.recordRawSystemMinute(
@@ -328,8 +333,8 @@ struct OhmLedgerTests {
         #expect(normalReceipt.discrepancyStatus == .exactConservation)
     }
 
-    // 5. Receipt query for "today" returns rows sorted by energy with battery minutes and percent; GPU is informational only (not subtracted, not attributed) per the ADR's GPU decision.
-    @Test func testReceiptTodayQuerySortedAndGpuInformational() async throws {
+    // 5. Receipt query for "today" returns rows sorted by energy with battery minutes and percent; GPU is a separate total under the measured T-021 decision.
+    @Test func testReceiptTodayQuerySortedAndGpuSeparate() async throws {
         let path = createTempDatabasePath(prefix: "test5")
         defer {
             try? FileManager.default.removeItem(atPath: path)
@@ -338,12 +343,19 @@ struct OhmLedgerTests {
         }
 
         let ledger = try EnergyLedger(path: path)
-        let now = Date()
+        let now = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+            .addingTimeInterval(12 * 3600 + 30)
         let t_min = Int64(floor(now.timeIntervalSince1970 / 60.0))
 
         let appA = AppKey(kind: .bundleID, value: "com.apple.Music")
         let appB = AppKey(kind: .bundleID, value: "com.google.Chrome")
         let appC = AppKey(kind: .bundleID, value: "com.mitchellh.ghostty")
+
+        // One hour of historical battery reference, outside today's receipt.
+        for minute in (t_min - 1500)..<(t_min - 1440) {
+            try await ledger.recordRawSystemMinute(t_min: minute, source: .battery, covered_ms: 60_000,
+                sysload_uj: 200_000_000, sysload_cov_ms: 60_000)
+        }
 
         // Chrome: 80 J, Music: 30 J, Ghostty: 50 J
         try await ledger.recordRawSlice(t_min: t_min, app: appA, displayName: "Music", category: .userApp, source: .battery, energy_uj: 30_000_000)
@@ -384,16 +396,17 @@ struct OhmLedgerTests {
         // P_ref = 200 J / 60 s = 3.333333... W
         // Chrome (80 J) -> minutes = 80 / (200/60) / 60 = 80 / 200 = 0.4 min
         #expect(receipt.rows[0].batteryMinutes != nil)
-        #expect(abs(receipt.rows[0].batteryMinutes! - 0.4) < 0.001)
+        let minutes = try #require(receipt.rows[0].batteryMinutes)
+        #expect(abs(minutes - 0.4) < 0.001)
 
         // Battery percent = 100 * 80 / 216 000 = 0.037037... %
         #expect(receipt.rows[0].batteryPercent != nil)
         #expect(abs(receipt.rows[0].batteryPercent! - (100.0 * 80.0 / 216_000.0)) < 0.001)
 
-        // GPU decision: informational only (not subtracted, not attributed)
+        // T-021 measured decision: GPU is a separate conserved total.
         #expect(receipt.gpu_uj == 25_000_000)
-        // Other = 200 J - 160 J = 40 J. It must NOT subtract GPU (25 J)!
-        #expect(receipt.other_uj == 40_000_000)
+        // Other = 200 J - 160 J - 25 J = 15 J.
+        #expect(receipt.other_uj == 15_000_000)
     }
 
     // 6. LedgerReader opens read-only (writes fail) and sees committed data from the writer (WAL).

@@ -12,7 +12,7 @@ public struct Migration: Sendable {
 }
 
 internal enum SchemaManager {
-    static let currentVersion = 1
+    static let currentVersion = 2
     static let readerCompatVersion = 1
 
     static let schemaV1 = """
@@ -129,10 +129,17 @@ internal enum SchemaManager {
     """
 
     static let migrations: [Migration] = [
-        Migration(version: 1, sql: schemaV1)
+        Migration(version: 1, sql: schemaV1),
+        Migration(version: 2, sql: """
+            ALTER TABLE system_1m ADD COLUMN sys_vi_ms INTEGER NOT NULL DEFAULT 0;
+            UPDATE system_1m SET sys_vi_ms = sys_cov_ms WHERE sys_src = 1;
+            ALTER TABLE energy_burst ADD COLUMN readable_cpu_valid INTEGER NOT NULL DEFAULT 0;
+            """)
     ]
 
     static func applyPragmasWriter(db: OpaquePointer?) throws {
+        // WAL must be selected before BEGIN; an empty DB otherwise stays in DELETE mode.
+        try SQLiteBridge.exec(db: db, sql: "PRAGMA journal_mode = WAL;")
         try SQLiteBridge.exec(db: db, sql: "PRAGMA synchronous = NORMAL;")
         try SQLiteBridge.exec(db: db, sql: "PRAGMA foreign_keys = ON;")
         try SQLiteBridge.exec(db: db, sql: "PRAGMA cache_size = -512;")

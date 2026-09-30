@@ -41,6 +41,10 @@ public actor EnergyLedger: EnergyLedgerWriting {
         var battViUj: Int64? = nil
         var battViCovMs: Int = 0
         var gpuUj: Int64? = nil
+        var effectiveUj: Int64? = nil
+        var effectiveCovMs: Int = 0
+        var effectiveViMs: Int = 0
+        var attributedCoveredUj: Int64 = 0
         var readableCount: Int = 0
         var unreadableCount: Int = 0
         var batteryPct: Int? = nil
@@ -50,6 +54,15 @@ public actor EnergyLedger: EnergyLedgerWriting {
         var thermalMax: Int? = nil
         var appDeltas: [AppKey: AppDeltaAccumulator] = [:]
     }
+
+    private struct ReadableWindow {
+        let start: Double
+        let end: Double
+        let energyUj: Int64
+        let isAwake: Bool
+    }
+    // Bounded history; a burst extending beyond it is explicitly unavailable.
+    private var readableWindows: [ReadableWindow] = []
 
     private var memoryBuckets: [BucketKey: MinuteBucket] = [:]
 
@@ -98,8 +111,16 @@ public actor EnergyLedger: EnergyLedgerWriting {
 
             // If file already exists, check integrity & version
             if FileManager.default.fileExists(atPath: path) {
+                // Probe a copy: even a read-only WAL connection can alter SHM on close.
+                let probeDir = FileManager.default.temporaryDirectory.appendingPathComponent("ohm-probe-\(UUID())")
+                try FileManager.default.createDirectory(at: probeDir, withIntermediateDirectories: false)
+                defer { try? FileManager.default.removeItem(at: probeDir) }
+                let probePath = probeDir.appendingPathComponent("ledger.sqlite").path
+                for suffix in ["", "-wal", "-shm"] where FileManager.default.fileExists(atPath: path + suffix) {
+                    try FileManager.default.copyItem(atPath: path + suffix, toPath: probePath + suffix)
+                }
                 var testDb: OpaquePointer?
-                let rc = sqlite3_open_v2(path, &testDb, SQLITE_OPEN_READWRITE, nil)
+                let rc = sqlite3_open_v2(probePath, &testDb, SQLITE_OPEN_READONLY, nil)
                 if rc == SQLITE_OK, let testDb = testDb {
                     let isClean = (try? SchemaManager.quickCheck(db: testDb)) ?? false
                     let ver = (try? SchemaManager.getUserVersion(db: testDb)) ?? 0
@@ -110,6 +131,9 @@ public actor EnergyLedger: EnergyLedgerWriting {
                     } else if ver > SchemaManager.currentVersion {
                         try backupAndReset(path: path, reason: "v\(ver)", clock: clock)
                     }
+                } else {
+                    if let testDb { sqlite3_close(testDb) }
+                    throw LedgerError.sqliteError(code: rc, message: "Veritabanı denetim için açılamadı")
                 }
             }
         }
@@ -123,84 +147,115 @@ public actor EnergyLedger: EnergyLedgerWriting {
             throw LedgerError.sqliteError(code: rc, message: msg)
         }
 
-        try SchemaManager.applyPragmasWriter(db: validDb)
-        try SchemaManager.migrateWriter(db: validDb, now: clock())
-        return validDb
+        do {
+            try SchemaManager.applyPragmasWriter(db: validDb)
+            try SchemaManager.migrateWriter(db: validDb, now: clock())
+            return validDb
+        } catch {
+            sqlite3_close(validDb)
+            throw error
+        }
     }
 
     private static func backupAndReset(path: String, reason: String, clock: Clock) throws {
         guard path != ":memory:" else { return }
         let nowS = Int64(floor(clock().timeIntervalSince1970))
         let bakPath = "\(path).\(reason).\(nowS).bak"
-        _ = try? FileManager.default.moveItem(atPath: path, toPath: bakPath)
-        _ = try? FileManager.default.removeItem(atPath: "\(path)-wal")
-        _ = try? FileManager.default.removeItem(atPath: "\(path)-shm")
+        let manager = FileManager.default
+        let suffixes = ["", "-wal", "-shm"].filter { manager.fileExists(atPath: path + $0) }
+        var copied: [String] = []
+        do {
+            for suffix in suffixes {
+                try manager.copyItem(atPath: path + suffix, toPath: bakPath + suffix)
+                copied.append(suffix)
+            }
+        } catch {
+            for suffix in copied { try? manager.removeItem(atPath: bakPath + suffix) }
+            throw error
+        }
+        // Do not remove any originals until all three backup copies succeed.
+        for suffix in suffixes.reversed() { try manager.removeItem(atPath: path + suffix) }
     }
 
     // MARK: - EnergyLedgerWriting Protocol Implementation
 
     public func record(_ tick: SampleTick) async throws {
-        let t_min = Int64(floor(tick.wallClock.timeIntervalSince1970 / 60.0))
+        let durationMs = Self.milliseconds(tick.interval)
+        guard durationMs > 0 else { return }
+        let endMs = Int64((tick.wallClock.timeIntervalSince1970 * 1000).rounded())
+        let startMs = endMs - durationMs
         let source = tick.battery.source.sqliteValue
-        let key = BucketKey(t_min: t_min, source: source)
-
-        var bucket = memoryBuckets[key] ?? MinuteBucket()
-
-        let dur = tick.interval.components
-        let durationMs = max(1, Int(dur.seconds * 1000 + dur.attoseconds / 1_000_000_000_000_000))
-        bucket.coveredMs = min(60_000, bucket.coveredMs + durationMs)
-
-        if let loadWatts = tick.system.systemLoad {
-            let energyUj = Int64(loadWatts * Double(durationMs) * 1000.0)
-            bucket.sysloadUj = (bucket.sysloadUj ?? 0) + energyUj
-            bucket.sysloadCovMs = min(60_000, bucket.sysloadCovMs + durationMs)
-        } else if let mw = tick.battery.systemLoad_mW {
-            let energyUj = Int64(Double(mw) * Double(durationMs))
-            bucket.sysloadUj = (bucket.sysloadUj ?? 0) + energyUj
-            bucket.sysloadCovMs = min(60_000, bucket.sysloadCovMs + durationMs)
+        let parts = Self.minuteParts(startMs: startMs, endMs: endMs)
+        for part in parts {
+            let key = BucketKey(t_min: part.minute, source: source)
+            var bucket = memoryBuckets[key] ?? MinuteBucket()
+            let ms = Int(part.end - part.start)
+            bucket.coveredMs = min(60_000, bucket.coveredMs + ms)
+            let measuredLoad = tick.system.systemSource == .systemLoad ? tick.system.systemLoad : nil
+            let load = measuredLoad ?? tick.battery.systemLoad_mW.map { Double($0) / 1000 }
+            if let load {
+                let energy = Self.portion(Int64(load * Double(durationMs) * 1000), part: part, start: startMs, duration: durationMs)
+                bucket.sysloadUj = (bucket.sysloadUj ?? 0) + energy
+                bucket.sysloadCovMs += ms
+                bucket.effectiveUj = (bucket.effectiveUj ?? 0) + energy
+                bucket.effectiveCovMs += ms
+            }
+            let discharging = tick.battery.source == .battery && !tick.battery.isCharging
+            if discharging {
+                let vi = tick.system.systemSource == .batteryVI ? tick.system.systemLoad : nil
+                let watts = vi ?? Double(tick.battery.voltage_mV) * Double(abs(tick.battery.amperage_mA)) / 1_000_000
+                let energy = Self.portion(Int64(watts * Double(durationMs) * 1000), part: part, start: startMs, duration: durationMs)
+                bucket.battViUj = (bucket.battViUj ?? 0) + energy
+                bucket.battViCovMs += ms
+                if load == nil {
+                    bucket.effectiveUj = (bucket.effectiveUj ?? 0) + energy
+                    bucket.effectiveCovMs += ms
+                    bucket.effectiveViMs += ms
+                }
+            }
+            bucket.readableCount = tick.unreadable.readableCount
+            bucket.unreadableCount = tick.unreadable.unreadableCount
+            bucket.batteryPct = tick.battery.percent
+            bucket.voltageMv = tick.battery.voltage_mV
+            bucket.rawChargeMah = tick.battery.rawCurrentCapacity_mAh
+            bucket.fccMah = tick.battery.fullChargeCapacity_mAh
+            bucket.thermalMax = max(bucket.thermalMax ?? 0, tick.thermal.rawValue)
+            for process in tick.processes {
+                var acc = bucket.appDeltas[process.app] ?? AppDeltaAccumulator(
+                    displayName: process.displayName, bundlePath: process.bundlePath,
+                    category: process.category, lastSeen: endMs / 1000)
+                let energyUj = Self.portion(Int64(process.energy_nJ / 1000), part: part, start: startMs, duration: durationMs)
+                acc.energyUj += energyUj
+                if load != nil || discharging { bucket.attributedCoveredUj += energyUj }
+                acc.pEnergyUj += Self.portion(Int64(process.pEnergy_nJ / 1000), part: part, start: startMs, duration: durationMs)
+                acc.cpuMs += Self.portion(Int64(process.cpuTime_ns / 1_000_000), part: part, start: startMs, duration: durationMs)
+                acc.lastSeen = max(acc.lastSeen, endMs / 1000)
+                bucket.appDeltas[process.app] = acc
+            }
+            memoryBuckets[key] = bucket
         }
-
-        if tick.battery.source == .battery && !tick.battery.isCharging {
-            let volts = Double(tick.battery.voltage_mV) / 1000.0
-            let amps = Double(abs(tick.battery.amperage_mA)) / 1000.0
-            let powerWatts = volts * amps
-            let energyUj = Int64(powerWatts * Double(durationMs) * 1000.0)
-            bucket.battViUj = (bucket.battViUj ?? 0) + energyUj
-            bucket.battViCovMs = min(60_000, bucket.battViCovMs + durationMs)
+        // GPU has its own measurement window and can cross a different minute boundary.
+        if let gpu = tick.system.gpu {
+            let gpuMs = Self.milliseconds(tick.system.gpuInterval ?? tick.interval)
+            if gpuMs > 0 {
+                let gpuStart = endMs - gpuMs
+                let energy = Int64(gpu * Double(gpuMs) * 1000)
+                for part in Self.minuteParts(startMs: gpuStart, endMs: endMs) {
+                    let key = BucketKey(t_min: part.minute, source: source)
+                    var bucket = memoryBuckets[key] ?? MinuteBucket()
+                    bucket.gpuUj = (bucket.gpuUj ?? 0) + Self.portion(energy, part: part, start: gpuStart, duration: gpuMs)
+                    memoryBuckets[key] = bucket
+                }
+            }
         }
-
-        if let gpuWatts = tick.system.gpu {
-            // IOReport's own measurement interval; the tick interval is only a fallback.
-            let gpuDur = (tick.system.gpuInterval ?? tick.interval).components
-            let gpuSeconds = Double(gpuDur.seconds) + Double(gpuDur.attoseconds) / 1e18
-            let energyUj = Int64(gpuWatts * gpuSeconds * 1_000_000.0)
-            bucket.gpuUj = (bucket.gpuUj ?? 0) + energyUj
+        let sleepMs = Self.milliseconds(tick.asleep)
+        if sleepMs > 0 {
+            readableWindows.append(ReadableWindow(start: Double(startMs - sleepMs) / 1000,
+                end: Double(startMs) / 1000, energyUj: 0, isAwake: false))
         }
-
-        bucket.readableCount = tick.unreadable.readableCount
-        bucket.unreadableCount = tick.unreadable.unreadableCount
-        bucket.batteryPct = tick.battery.percent
-        bucket.voltageMv = tick.battery.voltage_mV
-        bucket.rawChargeMah = tick.battery.rawCurrentCapacity_mAh
-        bucket.fccMah = tick.battery.fullChargeCapacity_mAh
-        bucket.thermalMax = max(bucket.thermalMax ?? 0, tick.thermal.rawValue)
-
-        let tickUnixSec = Int64(floor(tick.wallClock.timeIntervalSince1970))
-        for p in tick.processes {
-            var acc = bucket.appDeltas[p.app] ?? AppDeltaAccumulator(
-                displayName: p.app.value,
-                bundlePath: nil,
-                category: .userApp,
-                lastSeen: tickUnixSec
-            )
-            acc.energyUj += Int64(p.energy_nJ / 1000)
-            acc.pEnergyUj += Int64(p.pEnergy_nJ / 1000)
-            acc.cpuMs += Int64(p.cpuTime_ns / 1_000_000)
-            acc.lastSeen = max(acc.lastSeen, tickUnixSec)
-            bucket.appDeltas[p.app] = acc
-        }
-
-        memoryBuckets[key] = bucket
+        readableWindows.append(ReadableWindow(start: Double(startMs) / 1000, end: Double(endMs) / 1000,
+            energyUj: tick.processes.reduce(0) { $0 + Int64($1.energy_nJ / 1000) }, isAwake: true))
+        if readableWindows.count > 4096 { readableWindows.removeFirst(1024) }
 
         // tick.interval is awake time; sleep inside the tick is recorded as a gap, not as coverage.
         // Placement assumes the awake part is the tail (the timer fires right after wake).
@@ -218,18 +273,57 @@ public actor EnergyLedger: EnergyLedgerWriting {
                 let cpuUj = burst.cpu_mJ.map { Int64($0 * 1000.0) }
                 let dramUj = burst.dram_mJ.map { Int64($0 * 1000.0) }
                 let aneUj = burst.ane_mJ.map { Int64($0 * 1000.0) }
-                let coveredMs = Int(burst.window.duration * 1000.0)
-                try recordEnergyBurst(
-                    start_s: startS,
-                    end_s: endS,
-                    cpu_uj: cpuUj,
-                    dram_uj: dramUj,
-                    ane_uj: aneUj,
-                    readable_cpu_uj: 0,
-                    covered_ms: coveredMs
-                )
+                let windowStart = burst.window.start.timeIntervalSince1970
+                let windowEnd = burst.window.end.timeIntervalSince1970
+                var readableUj: Int64 = 0
+                var coveredSeconds = 0.0
+                var cursor = windowStart
+                var complete = true
+                for window in readableWindows where window.end > windowStart && window.start < windowEnd {
+                    let start = max(window.start, windowStart)
+                    let end = min(window.end, windowEnd)
+                    if start > cursor + 0.001 { complete = false }
+                    let seconds = max(0, end - max(start, cursor))
+                    readableUj += Int64((Double(window.energyUj) * seconds / (window.end - window.start)).rounded())
+                    if window.isAwake { coveredSeconds += seconds }
+                    cursor = max(cursor, end)
+                }
+                complete = complete && cursor >= windowEnd - 0.001
+                try recordEnergyBurst(start_s: startS, end_s: endS, cpu_uj: cpuUj,
+                    dram_uj: dramUj, ane_uj: aneUj, readable_cpu_uj: complete ? readableUj : nil,
+                    covered_ms: Int((coveredSeconds * 1000).rounded()))
             }
         }
+    }
+
+    private struct MinutePart {
+        let minute: Int64
+        let start: Int64
+        let end: Int64
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int64 {
+        let components = duration.components
+        return max(0, components.seconds * 1000 + components.attoseconds / 1_000_000_000_000_000)
+    }
+
+    private static func minuteParts(startMs: Int64, endMs: Int64) -> [MinutePart] {
+        var result: [MinutePart] = []
+        var cursor = startMs
+        while cursor < endMs {
+            let minute = Int64(floor(Double(cursor) / 60_000))
+            let end = min(endMs, (minute + 1) * 60_000)
+            result.append(MinutePart(minute: minute, start: cursor, end: end))
+            cursor = end
+        }
+        return result
+    }
+
+    // Cumulative rounding conserves every integer across the boundary.
+    private static func portion(_ total: Int64, part: MinutePart, start: Int64, duration: Int64) -> Int64 {
+        let endValue = Int64((Double(total) * Double(part.end - start) / Double(duration)).rounded())
+        let startValue = Int64((Double(total) * Double(part.start - start) / Double(duration)).rounded())
+        return endValue - startValue
     }
 
     public func flush() async throws {
@@ -278,27 +372,12 @@ public actor EnergyLedger: EnergyLedgerWriting {
         let sys_src: Int
         let sys_uj: Int64?
         let sys_cov_ms: Int
-        if bucket.sysloadCovMs > 0 {
-            sys_src = 0
-            sys_uj = bucket.sysloadUj
-            sys_cov_ms = bucket.sysloadCovMs
-        } else if key.source == 1 && bucket.battViCovMs > 0 {
-            sys_src = 1
-            sys_uj = bucket.battViUj
-            sys_cov_ms = bucket.battViCovMs
-        } else {
-            sys_src = 2
-            sys_uj = nil
-            sys_cov_ms = 0
-        }
+        sys_src = bucket.effectiveCovMs == 0 ? 2 : (bucket.sysloadCovMs > 0 ? 0 : 1)
+        sys_uj = bucket.effectiveUj
+        sys_cov_ms = bucket.effectiveCovMs
 
-        let totalAttributed = attributedUj + tailUj
-        let att_cov_uj: Int64
-        if bucket.coveredMs > 0 && sys_cov_ms > 0 {
-            att_cov_uj = Int64(round(Double(totalAttributed) * Double(sys_cov_ms) / Double(bucket.coveredMs)))
-        } else {
-            att_cov_uj = 0
-        }
+        // Attributed energy follows the measured tick parts, not a minute-wide average.
+        let att_cov_uj = bucket.attributedCoveredUj
 
         try insertOrUpdateSystem1m(
             t_min: key.t_min,
@@ -321,7 +400,8 @@ public actor EnergyLedger: EnergyLedgerWriting {
             voltage_mv: bucket.voltageMv,
             raw_charge_mah: bucket.rawChargeMah,
             fcc_mah: bucket.fccMah,
-            thermal_max: bucket.thermalMax
+            thermal_max: bucket.thermalMax,
+            sys_vi_ms: bucket.effectiveViMs
         )
     }
 
@@ -334,35 +414,58 @@ public actor EnergyLedger: EnergyLedgerWriting {
 
         try SQLiteBridge.exec(db: db, sql: "BEGIN IMMEDIATE;")
         do {
-            // 1. Rollup finished hours
-            var minHourIn1m: Int64? = nil
-            let minStmt = try SQLiteBridge.prepare(db: db, sql: "SELECT MIN(t_min) / 60 FROM slice_1m;")
-            if try SQLiteBridge.step(stmt: minStmt, db: db) {
-                if SQLiteBridge.columnType(stmt: minStmt, index: 0) != SQLITE_NULL {
-                    minHourIn1m = SQLiteBridge.columnInt64(stmt: minStmt, index: 0)
+            // Resume the durable watermark and revisit the recent three hours.
+            let marker: Int64
+            do {
+                let markerStmt = try SQLiteBridge.prepare(db: db, sql: "SELECT value FROM meta WHERE key='rolled_through_hour';")
+                defer { SQLiteBridge.finalize(stmt: markerStmt) }
+                if try SQLiteBridge.step(stmt: markerStmt, db: db) {
+                    marker = Int64(SQLiteBridge.columnText(stmt: markerStmt, index: 0)) ?? 0
+                } else {
+                    marker = 0
                 }
             }
-            SQLiteBridge.finalize(stmt: minStmt)
-
-            let startRollupHour: Int64
-            if let minH = minHourIn1m {
-                startRollupHour = max(minH, nowHour - 3)
-            } else {
-                startRollupHour = nowHour - 3
-            }
-
-            if startRollupHour < nowHour {
-                for h in startRollupHour..<nowHour {
-                    try rollupHour(h)
+            let firstHour = min(marker + 1, nowHour - 3)
+            let hoursStmt = try SQLiteBridge.prepare(db: db, sql: """
+                SELECT t_min / 60 AS hour FROM system_1m
+                UNION SELECT t_min / 60 AS hour FROM slice_1m
+                ORDER BY hour;
+                """)
+            defer { SQLiteBridge.finalize(stmt: hoursStmt) }
+            var hours: [Int64] = []
+            while try SQLiteBridge.step(stmt: hoursStmt, db: db) {
+                let hour = SQLiteBridge.columnInt64(stmt: hoursStmt, index: 0)
+                if hour < nowHour {
+                    if hour >= firstHour {
+                        hours.append(hour)
+                    } else {
+                        let missing = try SQLiteBridge.prepare(db: db, sql: """
+                            SELECT EXISTS(SELECT 1 FROM system_1m m WHERE m.t_min >= \(hour * 60) AND m.t_min < \((hour + 1) * 60)
+                              AND NOT EXISTS(SELECT 1 FROM system_1h h WHERE h.t_hour = \(hour) AND h.source = m.source))
+                            OR EXISTS(SELECT 1 FROM slice_1m m WHERE m.t_min >= \(hour * 60) AND m.t_min < \((hour + 1) * 60)
+                              AND NOT EXISTS(SELECT 1 FROM slice_1h h WHERE h.t_hour = \(hour) AND h.app_id=m.app_id AND h.source=m.source));
+                            """)
+                        defer { SQLiteBridge.finalize(stmt: missing) }
+                        if try SQLiteBridge.step(stmt: missing, db: db), SQLiteBridge.columnInt64(stmt: missing, index: 0) != 0 {
+                            hours.append(hour)
+                        }
+                    }
                 }
-                try SQLiteBridge.exec(db: db, sql: "INSERT OR REPLACE INTO meta (key, value) VALUES ('rolled_through_hour', '\(nowHour - 1)');")
             }
+            for hour in hours { try rollupHour(hour) }
+            try SQLiteBridge.exec(db: db, sql: "INSERT OR REPLACE INTO meta (key, value) VALUES ('rolled_through_hour', '\(max(marker, nowHour - 1))');")
 
             // 2. Retention Pruning
             // 48 h minute slices = 2880 minutes
             let minuteRetentionMin = nowMin - 2880
-            try SQLiteBridge.exec(db: db, sql: "DELETE FROM slice_1m WHERE t_min < \(minuteRetentionMin);")
-            try SQLiteBridge.exec(db: db, sql: "DELETE FROM system_1m WHERE t_min < \(minuteRetentionMin);")
+            try SQLiteBridge.exec(db: db, sql: "DELETE FROM slice_1m WHERE t_min < \(minuteRetentionMin) AND EXISTS (SELECT 1 FROM slice_1h h WHERE h.t_hour = slice_1m.t_min / 60 AND h.app_id = slice_1m.app_id AND h.source = slice_1m.source);")
+            try SQLiteBridge.exec(db: db, sql: "DELETE FROM system_1m WHERE t_min < \(minuteRetentionMin) AND EXISTS (SELECT 1 FROM system_1h h WHERE h.t_hour = system_1m.t_min / 60 AND h.source = system_1m.source);")
+
+            // Keep the time extent of the hourly remainder distinct from surviving minutes.
+            try SQLiteBridge.exec(db: db, sql: """
+                INSERT INTO meta (key, value) VALUES ('minutes_pruned_before', '\(minuteRetentionMin)')
+                ON CONFLICT(key) DO UPDATE SET value = CAST(MAX(CAST(meta.value AS INTEGER), \(minuteRetentionMin)) AS TEXT);
+                """)
 
             // 90 days hourly = 90 * 24 = 2160 hours
             let hourRetentionHour = nowHour - 2160
@@ -436,7 +539,7 @@ public actor EnergyLedger: EnergyLedgerWriting {
           SUM(batt_vi_cov_ms),
           SUM(sys_uj),
           SUM(sys_cov_ms),
-          SUM(CASE WHEN sys_src = 1 THEN sys_cov_ms ELSE 0 END),
+          SUM(sys_vi_ms),
           SUM(att_cov_uj),
           SUM(gpu_uj),
           SUM(attributed_uj),
@@ -562,7 +665,8 @@ public actor EnergyLedger: EnergyLedgerWriting {
         voltage_mv: Int?,
         raw_charge_mah: Int?,
         fcc_mah: Int?,
-        thermal_max: Int?
+        thermal_max: Int?,
+        sys_vi_ms: Int
     ) throws {
         let sql = """
         INSERT INTO system_1m (
@@ -572,8 +676,8 @@ public actor EnergyLedger: EnergyLedgerWriting {
           sys_src, sys_uj, sys_cov_ms, att_cov_uj,
           gpu_uj, attributed_uj, tail_uj,
           readable_count, unreadable_count,
-          battery_pct, voltage_mv, raw_charge_mah, fcc_mah, thermal_max
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          battery_pct, voltage_mv, raw_charge_mah, fcc_mah, thermal_max, sys_vi_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (t_min, source) DO UPDATE SET
           covered_ms = min(60000, system_1m.covered_ms + excluded.covered_ms),
           sysload_uj = CASE
@@ -586,7 +690,9 @@ public actor EnergyLedger: EnergyLedgerWriting {
             WHEN excluded.batt_vi_uj IS NULL THEN system_1m.batt_vi_uj
             ELSE system_1m.batt_vi_uj + excluded.batt_vi_uj END,
           batt_vi_cov_ms = system_1m.batt_vi_cov_ms + excluded.batt_vi_cov_ms,
-          sys_src = excluded.sys_src,
+          sys_src = CASE WHEN system_1m.sysload_cov_ms + excluded.sysload_cov_ms > 0 THEN 0
+                         WHEN system_1m.batt_vi_cov_ms + excluded.batt_vi_cov_ms > 0 THEN 1 ELSE 2 END,
+          sys_vi_ms = system_1m.sys_vi_ms + excluded.sys_vi_ms,
           sys_uj = CASE
             WHEN system_1m.sys_uj IS NULL THEN excluded.sys_uj
             WHEN excluded.sys_uj IS NULL THEN system_1m.sys_uj
@@ -630,6 +736,7 @@ public actor EnergyLedger: EnergyLedgerWriting {
         try SQLiteBridge.bindInt64OrNil(stmt: stmt, index: 19, value: raw_charge_mah.map { Int64($0) })
         try SQLiteBridge.bindInt64OrNil(stmt: stmt, index: 20, value: fcc_mah.map { Int64($0) })
         try SQLiteBridge.bindInt64OrNil(stmt: stmt, index: 21, value: thermal_max.map { Int64($0) })
+        try SQLiteBridge.bindInt64(stmt: stmt, index: 22, value: Int64(sys_vi_ms))
         try SQLiteBridge.stepDone(stmt: stmt, db: db)
     }
 
@@ -729,7 +836,8 @@ public actor EnergyLedger: EnergyLedgerWriting {
             voltage_mv: voltage_mv,
             raw_charge_mah: raw_charge_mah,
             fcc_mah: fcc_mah,
-            thermal_max: thermal_max
+            thermal_max: thermal_max,
+            sys_vi_ms: sys_src == 1 ? sys_cov_ms : 0
         )
     }
 
@@ -739,18 +847,19 @@ public actor EnergyLedger: EnergyLedgerWriting {
         cpu_uj: Int64?,
         dram_uj: Int64?,
         ane_uj: Int64?,
-        readable_cpu_uj: Int64,
+        readable_cpu_uj: Int64?,
         covered_ms: Int
     ) throws {
         let sql = """
-        INSERT INTO energy_burst (start_s, end_s, cpu_uj, dram_uj, ane_uj, readable_cpu_uj, covered_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO energy_burst (start_s, end_s, cpu_uj, dram_uj, ane_uj, readable_cpu_uj, covered_ms, readable_cpu_valid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (start_s) DO UPDATE SET
           end_s = excluded.end_s,
           cpu_uj = excluded.cpu_uj,
           dram_uj = excluded.dram_uj,
           ane_uj = excluded.ane_uj,
           readable_cpu_uj = excluded.readable_cpu_uj,
+          readable_cpu_valid = excluded.readable_cpu_valid,
           covered_ms = excluded.covered_ms;
         """
         let stmt = try SQLiteBridge.prepare(db: db, sql: sql)
@@ -760,8 +869,9 @@ public actor EnergyLedger: EnergyLedgerWriting {
         try SQLiteBridge.bindInt64OrNil(stmt: stmt, index: 3, value: cpu_uj)
         try SQLiteBridge.bindInt64OrNil(stmt: stmt, index: 4, value: dram_uj)
         try SQLiteBridge.bindInt64OrNil(stmt: stmt, index: 5, value: ane_uj)
-        try SQLiteBridge.bindInt64(stmt: stmt, index: 6, value: readable_cpu_uj)
+        try SQLiteBridge.bindInt64(stmt: stmt, index: 6, value: readable_cpu_uj ?? 0)
         try SQLiteBridge.bindInt64(stmt: stmt, index: 7, value: Int64(covered_ms))
+        try SQLiteBridge.bindInt64(stmt: stmt, index: 8, value: readable_cpu_uj == nil ? 0 : 1)
         try SQLiteBridge.stepDone(stmt: stmt, db: db)
     }
 

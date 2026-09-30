@@ -126,7 +126,7 @@ CREATE TABLE system_1m (
   sys_uj           INTEGER,        -- seçilen kaynağın enerjisi; sys_src = 2 ise NULL
   sys_cov_ms       INTEGER NOT NULL DEFAULT 0,  -- seçilen kaynağın kapsadığı süre
   att_cov_uj       INTEGER NOT NULL DEFAULT 0,  -- attributed_uj + tail_uj'nin sys_cov_ms içine düşen kısmı
-  gpu_uj           INTEGER,        -- IOReport "GPU Energy" (nJ, canlı) / 1000; yalnız bilgi amaçlı (§ 5)
+  gpu_uj           INTEGER,        -- IOReport "GPU Energy" (nJ, canlı) / 1000; ayrı toplam satırı (§ 5; M3/macOS 27 ölçümü)
   attributed_uj    INTEGER NOT NULL,   -- bu (t_min, source) için Σ slice_1m.energy_uj
   tail_uj          INTEGER NOT NULL,   -- eşik altı uygulamaların toplamı (satırı yazılmayanlar)
   residual_uj      INTEGER GENERATED ALWAYS AS (sys_uj - att_cov_uj) VIRTUAL,  -- işaretli fark; negatif = fazla atıf
@@ -235,21 +235,29 @@ ORDER BY energy_uj DESC;
 
 `EnergyLedger.maintain(now:)` açılışta ve her saat başından 5 dk sonra `.background` QoS ile çalışır. Adımlar tek transaction içindedir:
 
-1. **Rollup:** Bitmiş her saat için `slice_1h` ve `system_1h` hesaplanır. Hesap, o saatin bütün `*_1m` satırlarından baştan yapılır (`INSERT … ON CONFLICT DO UPDATE SET … = excluded.…`, yani toplama değil değiştirme). Bu yüzden işlem idempotent'tir. Geç gelen veriye karşı her çalışmada son 3 saat yeniden hesaplanır. `meta.rolled_through_hour` güncellenir.
-2. **Budama:** `DELETE FROM slice_1m WHERE t_min < :now_min - 2880` (birincil anahtar `t_min` ile başladığı için aralık silmesi ucuz). Aynı işlem `system_1m` için yapılır. Saatlik tablolar, `sampling_gap` ve `energy_burst` için sınır 90 gündür.
+1. **Rollup:** `rolled_through_hour + 1`'den bitmiş saatlere devam edilir; dilim olmadan yalnız sistem ölçümü olan saatler de işlenir. İlk çalışmada bütün mevcut bitmiş saatler ve karşılığı eksik saatler yakalanır. Bitmiş her saat için `slice_1h` ve `system_1h` hesaplanır. Hesap, o saatin bütün `*_1m` satırlarından baştan yapılır (`INSERT … ON CONFLICT DO UPDATE SET … = excluded.…`, yani toplama değil değiştirme). Bu yüzden işlem idempotent'tir. Geç gelen veriye karşı her çalışmada son 3 saat yeniden hesaplanır. `meta.rolled_through_hour` güncellenir.
+2. **Budama:** Yalnız `(saat, uygulama, kaynak)` / `(saat, kaynak)` saatlik karşılığı oluşturulmuş dakika satırları silinir: `DELETE FROM slice_1m WHERE t_min < :now_min - 2880` (birincil anahtar `t_min` ile başladığı için aralık silmesi ucuz). Aynı işlem `system_1m` için yapılır. Saatlik tablolar, `sampling_gap` ve `energy_burst` için sınır 90 gündür.
 3. **Alan geri kazanma:** `PRAGMA incremental_vacuum(256)` ve `PRAGMA wal_checkpoint(PASSIVE)`.
+
+**Okuma ve çakışma:** Fiş ve son 7 günlük `P_ref`, dakika ve saatlik tabloları birlikte kullanır. Saklama sınırı saatin ortasını kesebilir: o saatin eski kısmı, saatlik toplamdan hâlâ tutulan dakika toplamları çıkarılarak bulunur. Böylece enerji ve kapsam iki kez sayılmaz; tam 48 saat budama korunur. `meta.minutes_pruned_before` aynı bakım transaction’ında budama sınırını tutar; saatlik kalanın zaman aralığı bu sınırda biter, güncel dakika sorgusuna sızmaz. Eski kısmın zaman çözünürlüğü saattir. Güncel dakika aralıkları `[başlangıç, bitiş)` olarak kullanılır.
+
+**Ölçüm aralığı:** Tick bitiş anına yazılmaz; `[wallClock − interval, wallClock)` dakika sınırlarından bölünür. Süreç enerjisi, P-core enerjisi ve CPU zamanı aynı oranlarla, toplam tamsayı korunacak şekilde dağıtılır. Sistem enerjisi, kapsam ve `att_cov_uj` aynı ölçülmüş parçalara gider; ölçülmeyen tick enerjisi dakika-geneli bir kapsam oranıyla yeniden atfedilmez; GPU kendi `gpuInterval` aralığıyla ayrıca bölünür. Uyku kapsam değildir, `sampling_gap` kaydıdır. Tick içinde kaynak değişiminin anı verilmediğinden bütün tick'in pil/AC kimliği uçtaki `BatteryState`'tir.
 
 **Saat dilimi:** Saatlik kovalar UTC'dir. 48 saatten eski geçmişte gün sınırı yerel saate göre saatlik kovalardan kurulur. Yarım veya çeyrek saatlik ofset kullanan bölgelerde (ör. UTC+5:30, +5:45) bu, eski günlerde ±30/45 dakikalık sınır hatası demektir. Bugünün ve dünün fişi bu hatadan etkilenmez.
 
 ### 5. Etkin sistem enerjisi, pil dakikası ve fiş satırları
 
-**Etkin sistem enerjisi (tek kaynak).** Hem fiş satırları hem `P_ref` yalnız `sys_uj` ve `sys_cov_ms` alanlarını kullanır. Ham `sysload_uj` ve `batt_vi_uj` yalnız tanı içindir. Kaynak, dakika flush'ında `(t_min, source)` satırı başına seçilir:
+**Etkin sistem enerjisi (tek kaynak).** Hem fiş satırları hem `P_ref` yalnız `sys_uj` ve `sys_cov_ms` alanlarını kullanır. Ham `sysload_uj` ve `batt_vi_uj` yalnız tanı içindir. Kaynak her ölçüm parçasında seçilir ve dakika flush'ında aynı kaynak kimliğiyle biriktirilir:
 
 ```
-if sysload_cov_ms > 0:                          sys_src = 0 (SystemLoad);  sys_uj = sysload_uj;  sys_cov_ms = sysload_cov_ms
-elif source = pil ∧ batt_vi_cov_ms > 0:         sys_src = 1 (V·I, deşarj); sys_uj = batt_vi_uj;  sys_cov_ms = batt_vi_cov_ms
-else:                                           sys_src = 2 (yok);         sys_uj = NULL;        sys_cov_ms = 0
-att_cov_uj = (attributed_uj + tail_uj) · sys_cov_ms / covered_ms   (kapsanan süreye düşen atıf; covered_ms = 0 ise 0)
+SystemPower.systemSource = systemLoad:         sysload_uj ve sysload_cov_ms
+SystemPower.systemSource = batteryVI:          batt_vi_uj ve batt_vi_cov_ms (yalnız deşarjda)
+SystemLoad yok, source = pil, deşarj:           V·I yedeği
+Adaptörde SystemLoad yok:                      sistem enerjisi yok
+sys_uj, sys_cov_ms = her parçada seçilmiş etkin enerjinin ve kapsamın toplamı
+sys_vi_ms = etkin kapsamın V·I ile ölçülen kısmı
+sys_src = SystemLoad kullanıldıysa 0; yalnız V·I varsa 1; ölçüm yoksa 2
+att_cov_uj = (attributed_uj + tail_uj) · sys_cov_ms / covered_ms
 ```
 
 - İki kaynak aynı büyüklüğü (sistemin çektiği gücü) ölçtüğü için bir aralıkta dakika dakika karışabilir. Arayüz, sistem ölçümünün aralığın yüzde kaçını kapsadığını ve bunun yüzde kaçının V·I yedeğinden geldiğini gösterir.
@@ -280,11 +288,12 @@ E_sys = Σ sys_uj                          ölçülen sistem enerjisi (sys_src �
 C     = Σ att_cov_uj                      aynı sürede atfedilen enerji (uygulamalar + macOS hizmetleri + küçük süreçler)
 Δ     = E_sys − C = Σ residual_uj         İŞARETLİ fark; ledger'da saklanır ve arayüzde gösterilir
 R     = max(0, Δ)                         atfedilemeyen kalan
-ρ     = Σ_b max(0, cpu_uj − readable_cpu_uj) · 10⁻⁶ / (Σ_b covered_ms · 10⁻³)   [W]; son 7 günün energy_burst satırları b
+ρ     = Σ_b max(0, cpu_uj − readable_cpu_uj) · 10⁻⁶ / (Σ_b covered_ms · 10⁻³)   [W]; son 7 günün geçerli CPU patlamaları b
 T_cov = Σ sys_cov_ms · 10⁻³                                                      [s]
-S     = min(R, ρ · T_cov · 10⁶)           "Sistem (okunamayan süreçler)" [µJ]; yalnız son 7 günde en az bir patlama varsa
-D     = R − S                             "Diğer (ekran, radyo, GPU)"
-G     = Σ gpu_uj                          yalnız bilgi amaçlı; toplamlara girmez
+G     = Σ gpu_uj                          ayrı GPU toplam satırı; uygulamalara atfedilmez
+S     = min(max(0, R − G), ρ · T_cov · 10⁶) "Sistem (okunamayan süreçler)" [µJ]; geçerli CPU patlaması varsa
+D     = max(0, R − S − G)                  "Diğer (ekran, radyo)"; patlama yoksa sistem de bu satırdadır
+Δ_GPU = E_sys − C − G                     GPU dahil korunum/tolerans farkı
 ```
 
 | Fiş satırı | Değer | Not |
@@ -293,24 +302,23 @@ G     = Σ gpu_uj                          yalnız bilgi amaçlı; toplamlara gi
 | macOS hizmetleri (`category = 1`) | `slice_*` toplamları | Okunabilen sistem süreçleri (aynı kullanıcı); tek satırda toplanır, açılabilir |
 | Küçük süreçler | Σ `tail_uj` | Dakikada 1 mJ eşiğinin altı |
 | Sistem (okunamayan süreçler) | `S` | Root ve başka kullanıcıların süreçleri (~%40 pid; `unreadable_count / (readable_count + unreadable_count)` oranı satırın açıklamasında gösterilir). Canlı ölçülemez; IOReport patlamalarından tahmin edilir ve "tahmini" etiketi taşır. |
-| Diğer (ekran, radyo, GPU) | `D` | Ekran, Wi-Fi, Bluetooth, SSD, platformun boştaki gücü, dönüştürme kayıpları ve GPU enerjisinin uygulama satırlarına girmeyen kısmı |
-| GPU (bilgi) | `G` | Canlı `GPU Energy`. **Toplamlara dahil değildir**: ne "Diğer"den çıkarılır ne uygulamalara atfedilir (aşağıdaki GPU kararı). |
+| Diğer (ekran, radyo) | `D` | Ekran, Wi-Fi, Bluetooth, SSD, platformun boştaki gücü ve dönüştürme kayıpları; geçerli CPU patlaması yoksa okunamayan sistem süreçleri de dahildir |
+| GPU | `G` | Canlı `GPU Energy`. Toplama dahildir, kalandan çıkarılır; uygulamalara atfedilmez. Doğrulanmış kapsam: M3, macOS 27. |
 
-**GPU kararı (#11).** `ri_energy_nj`'nin GPU işini içerip içermediği bilinmiyor. İki ölçünün birlikte hareket etmesi örtüşmeyi kanıtlamaz, çünkü GPU iş yükleri CPU enerjisi de harcar. Ayrıca çift sayım yalnız "Diğer"i küçültüp tutarsızlık eşiğine hiç ulaşmayabilir. Bu yüzden:
-- T-021 kontrollü bir doğrulama yapana kadar `G` yalnız bilgi amaçlıdır.
-- **Doğrulama protokolü (T-021):** Aynı test ikilisi iki kez çalıştırılır. (a) Bilinen miktarda Metal compute işi gönderir. (b) CPU tarafında aynı kod yolunu izler ama çekirdekler boştur. Örtüşme oranı `(Δri_energy_a − Δri_energy_b) / ΔGPU_a` olarak hesaplanır. ≈0 çıkarsa GPU süreç enerjisine dahil değildir ve `G`, `R`'den çıkarılarak ayrı bir toplam satırı olur. ≈1 çıkarsa GPU zaten uygulama satırlarının içindedir ve `G` bilgi satırı olarak kalır. Ara bir değer çıkarsa model belirsiz kalır, karar şefe gider ve bilgi satırı kalır.
-- **Ölçüm sonucu (T-021, M3, macOS 27):** Tek ikili, 250 komut tamponu × 2²⁰ iş parçacığı, her tampon tamamlanana kadar beklenir (`await completed()`); (a) çekirdek başına 2000 `fma`+`sin` döngüsü, (b) aynı kod yolu, döngü 0. Üç tur: (a) `Δri_energy` 0,0650 / 0,0574 / 0,0289 J, `ΔGPU` 37,52 / 37,88 / 37,81 J (~5,2 sn, ~7,2 W); (b) `Δri_energy` 0,0371 / 0,0399 / 0,0471 J, `ΔGPU` 0,06 / 0,04 / 0,04 J. Örtüşme oranı **+0,0007 / +0,0005 / −0,0005 → ≈0**. Karar: `ri_energy_nj` GPU işini **içermiyor**; protokolün ≈0 dalı geçerli (`G` uygulama satırlarında yok, `R`'den çıkarılıp ayrı toplam satırı olur). Formül ve tablo güncellemesi (`D = R − S − G`) şefin/T-022'nin işidir; bu satır yalnız ölçümü kaydeder.
+**GPU kararı (T-027 / T-001b #18).** Tek geçerli karar, T-021'in kontrollü M3/macOS 27 ölçümüne göre GPU'nun süreç CPU enerjisinden ayrı toplam olmasıdır: `D = max(0, R − S − G)`. Bu donanım/OS kapsamı dışına ölçüm sonucu genellenmez; yeni cihazlarda aynı kontrollü protokol tekrarlanmalıdır. Ledger bu kararı uygular; donanım yetenek seçimi bu görev kapsamı dışındadır.
+- **Doğrulama protokolü (T-021):** Aynı ikilinin Metal işi ve aynı CPU yolu üzerindeki boş çekirdek koşusu karşılaştırılır: `(Δri_energy_a − Δri_energy_b) / ΔGPU_a`. Burada ölçülen ≈0 sonucu ayrı toplam kararının temelidir; yalnız korelasyon karar ölçütü değildir.
+- **Ölçüm sonucu (T-021, M3, macOS 27):** Tek ikili, 250 komut tamponu × 2²⁰ iş parçacığı, her tampon tamamlanana kadar beklenir (`await completed()`); (a) çekirdek başına 2000 `fma`+`sin` döngüsü, (b) aynı kod yolu, döngü 0. Üç tur: (a) `Δri_energy` 0,0650 / 0,0574 / 0,0289 J, `ΔGPU` 37,52 / 37,88 / 37,81 J (~5,2 sn, ~7,2 W); (b) `Δri_energy` 0,0371 / 0,0399 / 0,0471 J, `ΔGPU` 0,06 / 0,04 / 0,04 J. Örtüşme oranı **+0,0007 / +0,0005 / −0,0005 → ≈0**. Karar: `ri_energy_nj` GPU işini **içermiyor**; protokolün ≈0 dalı geçerli (`G` uygulama satırlarında yok, `R`'den çıkarılıp ayrı toplam satırı olur). Bu karar formül, tablo ve Ledger uygulamasında T-027 ile yürürlüktedir.
 
 **Korunum ve tolerans (#13).**
-- **Tam korunum:** `Δ ≥ 0` ise `C + S + D = E_sys` tam olarak sağlanır.
-- **Tolerans:** `−0,05 · E_sys ≤ Δ < 0` ise atfedilen enerji ölçülenden fazladır. `S = D = 0` olur ve satırların toplamı ölçülen enerjiyi `|Δ|` kadar aşar. Bu durum gizlenmez: fişin toplam satırındaki ipucunda "tolerans içinde fazla atıf: +|Δ| J (%x)" yazar.
-- **Tutarsızlık:** `Δ < −0,05 · E_sys` ise arayüz "ölçüm tutarsız" uyarısı gösterir ve `S` ile `D` gizlenir.
-- **İpucu her zaman gösterilir:** "Ölçülen X J · atfedilen Y J · fark ±Z J (%)". `Receipt` API'si `residualSigned_uj` alanını döndürür. Ledger'da `system_1m.residual_uj` ve `system_1h.residual_uj` üretilen (generated) sütunlardır; dakika ve saat düzeyinde işaretli farkı doğrudan gösterir.
-- **Patlama yoksa** (son 7 günde hiç `energy_burst` yok): `S` hesaplanmaz. `R` tek satırda "Diğer (ekran, radyo, GPU, sistem)" olarak gösterilir ve açıklamada okunamayan süreç oranı yazılır. Okunamayan süreçlerin enerjisi hiçbir durumda "ekran, radyo" etiketli satıra sessizce katılmaz.
+- **Tam korunum:** `Δ_GPU ≥ 0` ise `C + G + S + D = E_sys` tam olarak sağlanır.
+- **Tolerans:** `−0,05 · E_sys ≤ Δ_GPU < 0` ise atfedilen enerji ölçülenden fazladır. `S = D = 0` olur ve satırların toplamı ölçülen enerjiyi `|Δ_GPU|` kadar aşar. Bu durum gizlenmez: fişin toplam satırındaki ipucunda "tolerans içinde fazla atıf: +|Δ_GPU| J (%x)" yazar.
+- **Tutarsızlık:** `Δ_GPU < −0,05 · E_sys` ise arayüz "ölçüm tutarsız" uyarısı gösterir ve `S` ile `D` gizlenir.
+- **İpucu her zaman gösterilir:** "Ölçülen X J · atfedilen Y J · fark ±Z J (%)". `Receipt` API'si `residualSigned_uj = E_sys − C` alanını döndürür; GPU dahil tolerans farkı bu değerden `gpu_uj` çıkarılarak elde edilir. Ledger'da `system_1m.residual_uj` ve `system_1h.residual_uj` üretilen (generated) sütunlardır; dakika ve saat düzeyinde işaretli farkı doğrudan gösterir.
+- **Geçerli CPU patlaması yoksa**: `S` hesaplanmaz. `max(0, R − G)` tek satırda "Diğer (ekran, radyo, sistem)" olarak gösterilir; GPU ayrı kalır ve açıklamada okunamayan süreç oranı yazılır. Okunamayan süreçlerin enerjisi hiçbir durumda "ekran, radyo" etiketli satıra sessizce katılmaz.
 
 ### 6. Dürüst sınırlar (arayüzdeki "bu sayı ne demek?" metninin kaynağı)
 
-1. `ri_energy_nj` bir **model tahminidir** (çekirdeğin enerji modeli), doğrudan ölçüm değildir ve CPU'yu kapsar. GPU'yu kapsayıp kapsamadığı henüz bilinmiyor (§ 5 GPU kararı). Uygulama başına GPU satırı yoktur; GPU toplamı yalnız bilgi amaçlı gösterilir.
+1. `ri_energy_nj` bir **model tahminidir** (çekirdeğin enerji modeli), doğrudan ölçüm değildir ve CPU'yu kapsar. M3/macOS 27'de GPU işini içermediği kontrollü ölçüldü (§ 5). Uygulama başına GPU satırı yoktur; GPU ayrı toplamdır. Diğer donanım/OS için bu sonuç doğrulanmış sayılmaz.
 2. Ekran, Wi-Fi, Bluetooth, SSD, hoparlör, platformun boştaki gücü ve dönüştürme kayıpları **hiçbir uygulamaya atfedilemez**. Bunlar "Diğer" satırına gider. Bir uygulamanın ekranı açık tutması ya da ağı meşgul etmesi fişte görünmez.
 3. İki örnek arasında doğup ölen süreçlerin enerjisi kaybolur ve atfedilemeyen kalana (`R`) düşer. Popover kapalıyken bu pencere 10 sn'dir. Uzun ömürlü bir süreç öldüğünde de son aralığı kaybolur.
 4. Root ve başka kullanıcıların süreçleri okunamaz. Faz 0'da bu oran ~%40 pid'di (668'de 268). Bunların enerjisi "Sistem (okunamayan süreçler)" satırında yalnız tahmini olarak görünür. WindowServer, uygulamalar adına ekran birleştirme (compositing) işi yapar ama root süreç olduğu için bu maliyet de o satırdadır.
@@ -324,9 +332,11 @@ G     = Σ gpu_uj                          yalnız bilgi amaçlı; toplamlara gi
 - Sürüm `PRAGMA user_version` ile tutulur. Migration'lar Swift içinde sıralı bir dizidir: `[Migration(version: Int, sql: String)]`. Her biri `BEGIN IMMEDIATE … COMMIT` içinde, yalnız yazar (`OhmApp`) tarafından uygulanır.
 - **Yalnız ekleme politikası:** Yeni tablo veya NULL olabilen yeni sütun eklemek `reader_compat` değerini değiştirmez. Böylece eski widget veya CLI yeni veritabanını okumaya devam eder. Sütun silmek, yeniden adlandırmak veya anlamını değiştirmek `reader_compat` değerini yükseltir.
 - **Okuyucu kuralı:** `LedgerReader` önce `reader_compat ≤ bildiğiSürüm` kontrolü yapar. Değer daha yüksekse "Ohm'u güncelleyin" döner ve çökmez. `user_version = 0` ise veritabanı boş kabul edilir.
+- **T-027 migration 2:** Migration 1 değiştirilmez. WAL, ilk migration transaction’ından önce bağlantı pragmasıyla etkinleştirilir; boş DB’de transaction içindeki `journal_mode` değişikliği uygulanmaz. `system_1m.sys_vi_ms INTEGER NOT NULL DEFAULT 0` eklenir; eski `sys_src = 1` kayıtlarının kapsamı aktarılır. `energy_burst.readable_cpu_valid INTEGER NOT NULL DEFAULT 0` eklenir. Eski yazar `readable_cpu_uj = 0` yazdığı için eski patlamalar tahmine alınmaz. Yeni yazar CPU enerjisini burst penceresiyle kesişen süreç deltalarından biriktirir; uyku sürelerini kapsamdan çıkarır. CPU veya okunabilir pencere yoksa tahmin gösterilmez. Çalışma belleğinde en fazla 4096 aralık tutulur (1024'lük budama); yeniden açılışta veya pencere bu geçmişi aştığında veri yoktur, sıfır varsayılmaz. Yeni sütunlar eklemelidir, `reader_compat = 1` kalır.
 - **Sürüm düşürme:** Yazar kendi bildiğinden yüksek bir `user_version` görürse veritabanını açmaz. Dosyayı `ledger.sqlite.v<N>.bak` olarak kenara taşır ve yeni bir veritabanı başlatır.
+- **Kenara alma güvenliği:** SQLite kontrolü ana DB ve mevcut WAL/SHM'nin geçici kopyasında yapılır; salt okunur bağlantı bile SHM'yi değiştirebilir. Ana DB, WAL ve SHM aynı yedek taban adına (`.bak`, `.bak-wal`, `.bak-shm`) kopyalanır. Hepsi başarıyla kopyalanmadan orijinaller silinmez. Kopyalama başarısızsa hata döner, yeni DB açılmaz; oluşturulan kısmi yedek temizlenir. Tek yazar varsayılır; dosya sistemi üzerindeki üç silme tek atomik işlem değildir, silme aşamasındaki hata durumunda tam yedek korunur.
 - **Bozulma:** Açılışta `PRAGMA quick_check` başarısız olursa aynı işlem uygulanır (kenara taşı, yeniden oluştur). Ledger türetilmiş ölçüm verisidir, kullanıcı belgesi değildir. Kaybı kabul edilebilir, uygulamanın açılmaması kabul edilemez.
-- T-041 (tahmin) ek özellik tabloları gerektirirse bunlar `version 2` migration'ı olarak eklenir.
+- T-041 (tahmin) ek özellik tabloları gerektirirse bunlar sonraki migration olarak eklenir (sürüm 2 T-027'ye aittir).
 
 ## Alternatifler
 
@@ -349,6 +359,6 @@ G     = Σ gpu_uj                          yalnız bilgi amaçlı; toplamlara gi
 ## Spike'a bağlı (Faz 0 sonuçlarıyla çözüldü)
 
 - **T-011 PASS:** `ri_energy_nj` ve `ri_penergy_nj` doğrudan kullanılır; CPU zamanından tahmin yedeği yok. `EPERM` oranı ~%40 pid. Bu süreçler "Diğer"e değil, tahmini "Sistem (okunamayan süreçler)" satırına yazılır (§ 5). Kimlik için `ri_proc_start_abstime` kullanılır.
-- **T-010 PARTIAL (kesin):** Etkin sistem enerjisi `SystemLoad`, deşarjda yedek olarak `V × I` (§ 5, `sys_uj`). GPU `GPU Energy` (`gpu_uj`) ile ölçülür ama bilgi amaçlıdır. CPU, DRAM ve ANE bileşen enerjisi yalnız `energy_burst` tablosunda uzun pencere olarak tutulur. "Diğer" = `max(0, sys − atfedilen) − Sistem tahmini`.
-- **Açık kalan (T-021):** `ri_energy_nj`'nin GPU işini içerip içermediği Faz 0'da test edilmedi. Karar: T-021'in kontrollü doğrulaması (§ 5 GPU kararı) yapılana kadar GPU ne "Diğer"den çıkarılır ne atfedilir. Birlikte hareket (korelasyon) karar ölçütü değildir.
+- **T-010 PARTIAL (kesin):** Etkin sistem enerjisi `SystemLoad`, deşarjda yedek olarak `V × I` (§ 5, `sys_uj`). GPU `GPU Energy` (`gpu_uj`) ile ölçülür ve T-021'in M3/macOS 27 sonucuyla ayrı toplama alınır. CPU, DRAM ve ANE bileşen enerjisi yalnız `energy_burst` tablosunda uzun pencere olarak tutulur. "Diğer" = `max(0, sys − atfedilen − GPU − Sistem tahmini)`.
+- **Çözülen (T-021, ölçülen kapsam):** M3/macOS 27'de GPU süreç enerjisine dahil değildir ve ayrı toplamdır (§ 5). Diğer cihaz/OS için kontrollü doğrulama açık kalır.
 - **Açık kalan doğrulama (T-021):** Atıf algoritmasının Chrome, Safari ve bir Electron uygulamasında beklenen gruplamayı verip vermediği. Faz 0 bunu ölçmedi. Vermezse `ppid` zinciri paket yolu kuralıyla birlikte kullanılır.
