@@ -833,9 +833,7 @@ public actor Governor: Governing {
         case .gone, .mismatch: v.append(.notRunning)
         case .unknown: v.append(.safetyProbeFailed)
         }
-        // Safer choice (ADR silent): the static scope gate, minus the `.regular` requirement, also
-        // applies to E-core so system UI processes never get PRIO_DARWIN_BG.
-        v += policy.scopeVetoes(app, forRule: false, confirmedBackground: true)
+        v += policy.eCoreScopeVetoes(app)
         guard v.isEmpty, let journal else {
             continuation.yield(.vetoed(bundleID: app.bundleID, vetoes: v))
             return .vetoed(v)
