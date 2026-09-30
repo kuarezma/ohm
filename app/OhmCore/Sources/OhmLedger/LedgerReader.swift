@@ -8,10 +8,17 @@ public final class LedgerReader: EnergyLedgerReading {
     private var db: OpaquePointer?
     private let path: String
     private var isDatabaseEmpty: Bool = false
+    private var schemaVersion: Int = 0
 
     public init(path: String) throws {
         self.path = path
-        try self.openDatabase()
+        do {
+            try self.openDatabase()
+        } catch {
+            if let db { sqlite3_close(db) }
+            db = nil
+            throw error
+        }
     }
 
     public convenience init(url: URL) throws {
@@ -38,6 +45,7 @@ public final class LedgerReader: EnergyLedgerReading {
 
         // Compatibility check
         let userVer = try SchemaManager.getUserVersion(db: validDb)
+        schemaVersion = userVer
         if userVer == 0 {
             self.isDatabaseEmpty = true
         } else {
@@ -58,6 +66,57 @@ public final class LedgerReader: EnergyLedgerReading {
         }
     }
 
+    // The retention seam may cut an hour: hourly minus surviving minutes is the older part.
+    // Recent rollups are thus excluded without duplicating any retained minute energy.
+    private var historyCTE: String {
+        """
+        WITH retention AS (
+          SELECT COALESCE(
+            (SELECT CAST(value AS INTEGER) FROM meta WHERE key='minutes_pruned_before'),
+            (SELECT MIN(t_min) FROM (SELECT t_min FROM system_1m UNION ALL SELECT t_min FROM slice_1m)),
+            9223372036854775807) AS cutoff
+        ), minute_system_totals AS (
+          SELECT t_min / 60 AS t_hour, source, SUM(covered_ms) AS covered_ms,
+                 SUM(sys_uj) AS sys_uj, SUM(sys_cov_ms) AS sys_cov_ms,
+                 SUM(att_cov_uj) AS att_cov_uj, SUM(attributed_uj) AS attributed_uj,
+                 SUM(tail_uj) AS tail_uj, SUM(gpu_uj) AS gpu_uj
+          FROM system_1m GROUP BY t_min / 60, source
+        ), system_hours AS (
+          SELECT h.t_hour * 60 AS t_min, MIN(60, MAX(0, (SELECT cutoff FROM retention) - h.t_hour * 60)) AS span_min, h.source,
+                 h.covered_ms - COALESCE(m.covered_ms, 0) AS covered_ms,
+                 h.sys_uj - COALESCE(m.sys_uj, 0) AS sys_uj,
+                 h.sys_cov_ms - COALESCE(m.sys_cov_ms, 0) AS sys_cov_ms,
+                 h.att_cov_uj - COALESCE(m.att_cov_uj, 0) AS att_cov_uj,
+                 h.attributed_uj - COALESCE(m.attributed_uj, 0) AS attributed_uj,
+                 h.tail_uj - COALESCE(m.tail_uj, 0) AS tail_uj,
+                 h.gpu_uj - COALESCE(m.gpu_uj, 0) AS gpu_uj,
+                 h.readable_avg AS readable_count, h.unreadable_avg AS unreadable_count,
+                 h.fcc_mah, h.voltage_mv_avg AS voltage_mv
+          FROM system_1h h LEFT JOIN minute_system_totals m ON m.t_hour=h.t_hour AND m.source=h.source
+        ), systems AS (
+          SELECT t_min, 1 AS span_min, source, covered_ms, sys_uj, sys_cov_ms, att_cov_uj,
+                 attributed_uj, tail_uj, gpu_uj, readable_count, unreadable_count, fcc_mah, voltage_mv
+          FROM system_1m
+          UNION ALL
+          SELECT * FROM system_hours
+          WHERE span_min > 0 AND (covered_ms > 0 OR sys_cov_ms > 0 OR attributed_uj > 0 OR tail_uj > 0 OR gpu_uj > 0)
+        ), slice_hours AS (
+          SELECT h.t_hour * 60 AS t_min, MIN(60, MAX(0, (SELECT cutoff FROM retention) - h.t_hour * 60)) AS span_min, h.app_id, h.source,
+                 h.energy_uj - COALESCE(SUM(m.energy_uj), 0) AS energy_uj,
+                 h.penergy_uj - COALESCE(SUM(m.penergy_uj), 0) AS penergy_uj,
+                 h.cpu_ms - COALESCE(SUM(m.cpu_ms), 0) AS cpu_ms
+          FROM slice_1h h LEFT JOIN slice_1m m
+            ON m.t_min >= h.t_hour * 60 AND m.t_min < (h.t_hour + 1) * 60
+               AND m.app_id=h.app_id AND m.source=h.source
+          GROUP BY h.t_hour, h.app_id, h.source
+        ), slices AS (
+          SELECT t_min, 1 AS span_min, app_id, source, energy_uj, penergy_uj, cpu_ms FROM slice_1m
+          UNION ALL
+          SELECT * FROM slice_hours WHERE span_min > 0 AND energy_uj > 0 AND penergy_uj >= 0 AND cpu_ms >= 0
+        )
+        """
+    }
+
     // MARK: - EnergyLedgerReading Protocol Implementation
 
     public func receipt(for interval: DateInterval, source: PowerSourceKind? = nil) throws -> Receipt {
@@ -66,12 +125,16 @@ public final class LedgerReader: EnergyLedgerReading {
             return Receipt(interval: interval, powerSource: source)
         }
 
+        // All aggregates in a receipt must see the same WAL snapshot.
+        try SQLiteBridge.exec(db: db, sql: "BEGIN;")
+        defer { _ = try? SQLiteBridge.exec(db: db, sql: "ROLLBACK;") }
+
         let startMin = Int64(floor(interval.start.timeIntervalSince1970 / 60.0))
         let endMin = max(startMin + 1, Int64(ceil(interval.end.timeIntervalSince1970 / 60.0)))
         let sevenDaysAgoS = Int64(floor(interval.end.timeIntervalSince1970)) - (7 * 86400)
 
         // 1. Query system_1m aggregates for the interval
-        let sysSql = """
+        let sysSql = historyCTE + """
         SELECT
           COALESCE(SUM(covered_ms), 0),
           COALESCE(SUM(sys_uj), 0),
@@ -82,8 +145,8 @@ public final class LedgerReader: EnergyLedgerReading {
           COALESCE(SUM(gpu_uj), 0),
           COALESCE(SUM(readable_count), 0),
           COALESCE(SUM(unreadable_count), 0)
-        FROM system_1m
-        WHERE t_min >= ? AND t_min < ?
+        FROM systems
+        WHERE t_min + span_min > ? AND t_min < ?
           AND (? IS NULL OR source = ?);
         """
         let sysStmt = try SQLiteBridge.prepare(db: db, sql: sysSql)
@@ -130,18 +193,20 @@ public final class LedgerReader: EnergyLedgerReading {
           COALESCE(SUM(MAX(0, cpu_uj - readable_cpu_uj)), 0),
           COALESCE(SUM(covered_ms), 0)
         FROM energy_burst
-        WHERE end_s >= ?;
+        WHERE end_s >= ? AND end_s <= ? AND cpu_uj IS NOT NULL
+          AND \(schemaVersion >= 2 ? "readable_cpu_valid = 1" : "0") AND covered_ms > 0;
         """
         let burstStmt = try SQLiteBridge.prepare(db: db, sql: burstSql)
         defer { SQLiteBridge.finalize(stmt: burstStmt) }
         try SQLiteBridge.bindInt64(stmt: burstStmt, index: 1, value: sevenDaysAgoS)
+        try SQLiteBridge.bindInt64(stmt: burstStmt, index: 2, value: Int64(interval.end.timeIntervalSince1970))
         if try SQLiteBridge.step(stmt: burstStmt, db: db) {
             let burstUnreadableUj = SQLiteBridge.columnInt64(stmt: burstStmt, index: 0)
             let burstCoveredMs = SQLiteBridge.columnInt64(stmt: burstStmt, index: 1)
             if burstCoveredMs > 0 {
                 let rho = (Double(burstUnreadableUj) * 1e-6) / (Double(burstCoveredMs) * 1e-3)
                 let t_cov = Double(totalSysCovMs) * 1e-3
-                let sVal = min(r, Int64(round(rho * t_cov * 1e6)))
+                let sVal = min(max(0, r - totalGpuUj), Int64(round(rho * t_cov * 1e6)))
                 unreadableSystemUj = sVal
                 isUnreadableEstimated = true
             }
@@ -151,10 +216,10 @@ public final class LedgerReader: EnergyLedgerReading {
         let discrepancyStatus: ReceiptDiscrepancyStatus
         var otherUj: Int64 = 0
 
-        if residualSignedUj >= 0 {
+        if residualSignedUj - totalGpuUj >= 0 {
             discrepancyStatus = .exactConservation
-            otherUj = max(0, r - unreadableSystemUj)
-        } else if Double(residualSignedUj) >= -0.05 * Double(e_sys) {
+            otherUj = max(0, r - unreadableSystemUj - totalGpuUj)
+        } else if Double(residualSignedUj - totalGpuUj) >= -0.05 * Double(e_sys) {
             discrepancyStatus = .withinToleranceOverAttribution
             unreadableSystemUj = 0
             otherUj = 0
@@ -166,35 +231,43 @@ public final class LedgerReader: EnergyLedgerReading {
 
         // 4. Calculate P_ref (watts) from last 7 days on battery
         var pRefWatts: Double? = nil
-        let pRefSql = """
-        SELECT
-          COALESCE(SUM(sys_uj), 0),
-          COALESCE(SUM(sys_cov_ms), 0)
-        FROM system_1m
-        WHERE source = 1 AND sys_src != 2 AND t_min >= ?;
+        let pRefSql = historyCTE + """
+        SELECT COALESCE(SUM(sys_uj), 0), COALESCE(SUM(sys_cov_ms), 0)
+        FROM systems
+        WHERE source = 1 AND sys_cov_ms > 0 AND t_min + span_min > ? AND t_min < ?;
         """
         let pRefStmt = try SQLiteBridge.prepare(db: db, sql: pRefSql)
         defer { SQLiteBridge.finalize(stmt: pRefStmt) }
         try SQLiteBridge.bindInt64(stmt: pRefStmt, index: 1, value: sevenDaysAgoS / 60)
+        try SQLiteBridge.bindInt64(stmt: pRefStmt, index: 2, value: endMin)
         if try SQLiteBridge.step(stmt: pRefStmt, db: db) {
-            let pRefSysUj = SQLiteBridge.columnInt64(stmt: pRefStmt, index: 0)
-            let pRefSysCovMs = SQLiteBridge.columnInt64(stmt: pRefStmt, index: 1)
-            if pRefSysCovMs > 0 {
-                pRefWatts = PRefCalculator.calculatePRef(sys_uj: pRefSysUj, sys_cov_ms: pRefSysCovMs)
+            let energy = SQLiteBridge.columnInt64(stmt: pRefStmt, index: 0)
+            let coverage = SQLiteBridge.columnInt64(stmt: pRefStmt, index: 1)
+            if coverage >= 3_600_000 {
+                pRefWatts = PRefCalculator.calculatePRef(sys_uj: energy, sys_cov_ms: coverage)
             }
         }
-
-        // Fallback for P_ref: if not in last 7 days, check interval itself
-        if pRefWatts == nil && totalSysCovMs > 0 && (source == .battery || source == nil) {
-            pRefWatts = PRefCalculator.calculatePRef(sys_uj: totalSysUj, sys_cov_ms: totalSysCovMs)
+        if pRefWatts == nil {
+            let today = Calendar.current.startOfDay(for: interval.end)
+            let todayStmt = try SQLiteBridge.prepare(db: db, sql: pRefSql)
+            defer { SQLiteBridge.finalize(stmt: todayStmt) }
+            try SQLiteBridge.bindInt64(stmt: todayStmt, index: 1, value: Int64(today.timeIntervalSince1970 / 60))
+            try SQLiteBridge.bindInt64(stmt: todayStmt, index: 2, value: endMin)
+            if try SQLiteBridge.step(stmt: todayStmt, db: db) {
+                let energy = SQLiteBridge.columnInt64(stmt: todayStmt, index: 0)
+                let coverage = SQLiteBridge.columnInt64(stmt: todayStmt, index: 1)
+                if coverage >= 600_000 {
+                    pRefWatts = PRefCalculator.calculatePRef(sys_uj: energy, sys_cov_ms: coverage)
+                }
+            }
         }
 
         // 5. Calculate E_full (joules) from latest fcc_mah and average voltage
         var eFullJoules: Double? = nil
-        let battParamSql = """
+        let battParamSql = historyCTE + """
         SELECT
-          (SELECT fcc_mah FROM system_1m WHERE source = 1 AND fcc_mah IS NOT NULL AND t_min >= ? ORDER BY t_min DESC LIMIT 1),
-          (SELECT CAST(ROUND(AVG(voltage_mv)) AS INTEGER) FROM system_1m WHERE source = 1 AND voltage_mv IS NOT NULL AND t_min >= ?)
+          (SELECT fcc_mah FROM systems WHERE source = 1 AND fcc_mah IS NOT NULL AND t_min >= ? AND t_min < \(endMin) ORDER BY t_min DESC LIMIT 1),
+          (SELECT CAST(ROUND(AVG(voltage_mv)) AS INTEGER) FROM systems WHERE source = 1 AND voltage_mv IS NOT NULL AND t_min >= ? AND t_min < \(endMin))
         """
         let battStmt = try SQLiteBridge.prepare(db: db, sql: battParamSql)
         defer { SQLiteBridge.finalize(stmt: battStmt) }
@@ -209,15 +282,17 @@ public final class LedgerReader: EnergyLedgerReading {
         }
 
         // 6. Query app slices for the interval
-        let appsSql = """
+        let appsSql = historyCTE + """
         SELECT
           a.kind, a.key, a.display_name, a.bundle_path, a.category,
           SUM(s.energy_uj) AS energy_uj,
           SUM(s.penergy_uj) AS penergy_uj,
-          SUM(s.cpu_ms) AS cpu_ms
-        FROM slice_1m AS s
+          SUM(s.cpu_ms) AS cpu_ms,
+          SUM(CASE WHEN s.source = 1 THEN s.energy_uj ELSE 0 END) AS battery_uj,
+          SUM(CASE WHEN s.source = 0 THEN s.energy_uj ELSE 0 END) AS ac_uj
+        FROM slices AS s
         JOIN app AS a ON a.id = s.app_id
-        WHERE s.t_min >= ? AND s.t_min < ?
+        WHERE s.t_min + s.span_min > ? AND s.t_min < ?
           AND (? IS NULL OR s.source = ?)
         GROUP BY s.app_id
         ORDER BY energy_uj DESC;
@@ -249,22 +324,25 @@ public final class LedgerReader: EnergyLedgerReading {
             let pEnergyUj = SQLiteBridge.columnInt64(stmt: appsStmt, index: 6)
             let cpuMs = SQLiteBridge.columnInt64(stmt: appsStmt, index: 7)
 
+            let batteryUj = SQLiteBridge.columnInt64(stmt: appsStmt, index: 8)
+            let acUj = SQLiteBridge.columnInt64(stmt: appsStmt, index: 9)
             let appKey = AppKey(kind: kind, value: keyStr)
 
             var batteryMinutes: Double? = nil
             var batteryPercent: Double? = nil
             var chargingWh: Double? = nil
 
-            if source == .battery || (source == nil && pRefWatts != nil) {
+            if source == .battery || source == nil {
                 if let pRef = pRefWatts {
-                    batteryMinutes = PRefCalculator.calculateBatteryMinutes(energy_uj: energyUj, pRef: pRef)
+                    batteryMinutes = PRefCalculator.calculateBatteryMinutes(energy_uj: batteryUj, pRef: pRef)
                 }
                 if let eFull = eFullJoules {
-                    let eApp = Double(energyUj) * 1e-6
+                    let eApp = Double(batteryUj) * 1e-6
                     batteryPercent = 100.0 * eApp / eFull
                 }
-            } else if source == .ac {
-                chargingWh = (Double(energyUj) * 1e-6) / 3600.0
+            }
+            if source == .ac || source == nil {
+                chargingWh = (Double(acUj) * 1e-6) / 3600.0
             }
 
             let row = ReceiptAppRow(
