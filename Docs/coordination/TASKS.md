@@ -19,7 +19,7 @@ Her görevin model seçimi ve gerekçesi `Docs/PLAN.md` § "Görev tablosu"ndad�
 | T-024 | Kritik review T-021 + T-023 | GPT-6 Astra high | Codex 🟠3 | T-021, T-023 | DONE | Bulgular testle kapanır |
 | T-025 | Kararsız Governor testleri 20 ve 22a: kök neden | GPT-6.1 Sol medium | Codex 🟡2 | T-023 | DONE | 20× Governor suite + 3× tam `swift test` kırmızısız |
 | T-026 | Dondurma güvenliği P1'leri + otomatik dondurma izin listesi (T-001b #1–4, #8) | GPT-6.1 Sol high | Codex 🟠3 | T-025 | DONE | Her bulguya regresyon testi; Governor/Journal testleri yeşil; kritik review Opus high |
-| T-026b | T-026 kritik review takibi (5 P2 + P3) | GPT-6.1 Sol high | Codex 🟠3 | T-026 | IN-PROGRESS | Her P2'ye regresyon testi; Governor/Journal yeşil |
+| T-026b | T-026 kritik review takibi (5 P2 + P3) | GPT-6.1 Sol high | Codex 🟠3 | T-026 | DONE | Her P2'ye regresyon testi; Governor/Journal yeşil |
 | T-027 | Ledger doğruluğu (T-001b #10–16, #18) | GPT-6.1 Sol medium | Codex 🟡2 | – | DONE | Her bulguya test; `swift test --filter OhmLedger` yeşil; ADR 0002 tek GPU kararı |
 | T-028 | Kural derleyici/motor doğruluğu (T-001b #5–7, #9) | GPT-6.1 Sol medium | Codex 🟡2 | – | DONE | Her bulguya test; `swift test --filter OhmRules` yeşil |
 | T-029 | Örnekleme geri basıncı (T-001b #17) | GPT-6.1 Sol medium | Codex 🟡2 | T-027 | DONE | Tüketici durunca bellek sınırlı; enerji toplamı korunur (test) |
