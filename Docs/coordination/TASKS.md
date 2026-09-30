@@ -36,7 +36,7 @@ Her görevin model seçimi ve gerekçesi `Docs/PLAN.md` § "Görev tablosu"ndad�
 | T-052 | Site Türkçe sürümü | Gemini 3.8 Flash high | AG 🔴3 | T-051 | DONE | Şef okur |
 | T-060 | CI: build, test, notarize, appcast | Gemini 3.8 Flash high | AG 🔴3 | T-020 | TODO | Dry-run yeşil |
 | T-061 | Performans ölçümü (UI kabuğu referansı) | Gemini 3.8 Flash high | AG 🔴3 | T-030 | DONE | Hedef tablo dolar (`Docs/perf/T-061-idle.md`) |
-| T-061b | Performans ölçümü, runtime bağlı | Gemini 3.8 Flash high | AG 🔴3 | T-034 | IN-PROGRESS | Aynı yöntem; PLAN hafiflik hedefleri |
+| T-061b | Performans ölçümü, runtime bağlı | Gemini 3.8 Flash high | AG 🔴3 | T-034 | DONE | Aynı yöntem; PLAN hafiflik hedefleri |
 | T-062 | Homebrew cask, README, katkı rehberi | Gemini 3.8 Flash high | AG 🔴3 | T-060 | TODO | `brew audit` temiz |
 
 ---
