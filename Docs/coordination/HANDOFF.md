@@ -1,4 +1,4 @@
-NEXT: **Çalışıyor:** T-033a (CLI/soket/Intents, Sol high), T-062 (README/cask, Gemini high), T-064 (Apple kullanıcı uygulamalarına E-core, Sol medium). Sonra T-063 (Sparkle, T-033a sonrası). **Kullanıcı adımları (dağıtım):** Developer ID sertifikası, `notarytool` profili (tekrar), 5 GitHub secret. P3: eval TR-2; `/bin/sleep` çocuk sayımı (OhmGovernorTests:348).
+NEXT: **Çalışıyor:** T-033a (CLI/soket/Intents, Sol high), T-064 (Apple kullanıcı uygulamalarına E-core, Sol medium), T-065 (imzasız önizleme sürümü, Gemini high). **Ertelendi (üyelik yok):** Developer ID, notarization, GitHub secret'ları, T-063 Sparkle. P3: eval TR-2; `/bin/sleep` çocuk sayımı (OhmGovernorTests:348).
 Pano: https://claude.ai/artifact/QGF58BzwKByWyg3HWaoLr6 (durum: `Docs/coordination/board.json` → şef aktarır)
 
 - **2026-09-29 · Opus 5.5 (Claude Code, şef) — Tur 0.** Repo, `Docs/PLAN.md`, `ROLES.md`, `TASKS.md`, işaretçi dosyalar (CLAUDE/AGENTS/GEMINI.md) kuruldu. **Devir:** Dalga 1.
@@ -38,3 +38,4 @@ Pano: https://claude.ai/artifact/QGF58BzwKByWyg3HWaoLr6 (durum: `Docs/coordinati
 
 - **2026-09-30 · Şef — T-062 PASS** (Gemini high). README EN/TR, CONTRIBUTING, SECURITY, `packaging/homebrew/ohm.rb` (şablon; `ruby -c` OK, `brew audit` ilk imzalı sürümde). Şef düzeltmeleri: "instantly/anında" → ölçülen ≈20 ms (T-013); lisans satırı Apache-2.0. Ağ iddiası koddan doğrulandı (yalnız Ayarlar'daki kullanıcı linki). Merge.
 
+- **2026-09-30 · Şef — Apple hesabı Personal Team.** Kullanıcının hesabı ücretsiz "Personal Team"; Developer ID ve notarization ücretli Developer Program gerektiriyor, kullanıcı şimdilik katılmıyor. Kararlar: sürümler ad-hoc imzalı **önizleme** zip'i (T-065: secret yokken `release.sh` paket üretir + ilk açılış notu); Homebrew yalnız kendi tap'imizden; **T-063 Sparkle ertelendi** (imzasız sürümde değeri düşük, bağımlılık eklenmez); notarization profili ve secret'lar ertelendi. PLAN § İmzalama varsayımı ("hesap var") geçersiz. Yerel geliştirme ve App Group Personal Team ile çalışıyor.
