@@ -12,6 +12,7 @@ public struct RunawayProcessInfo: Sendable, Equatable, Identifiable {
     public var cpuPercent: Double
     public var hiddenDurationMinutes: Int
     public var appKey: AppKey
+    public var ruleNote: String?
 
     public init(
         pid: Int32,
@@ -19,7 +20,8 @@ public struct RunawayProcessInfo: Sendable, Equatable, Identifiable {
         bundleID: String? = nil,
         cpuPercent: Double,
         hiddenDurationMinutes: Int,
-        appKey: AppKey
+        appKey: AppKey,
+        ruleNote: String? = nil
     ) {
         self.pid = pid
         self.name = name
@@ -27,6 +29,7 @@ public struct RunawayProcessInfo: Sendable, Equatable, Identifiable {
         self.cpuPercent = cpuPercent
         self.hiddenDurationMinutes = hiddenDurationMinutes
         self.appKey = appKey
+        self.ruleNote = ruleNote
     }
 }
 
@@ -52,6 +55,7 @@ public protocol OhmDataSource: AnyObject {
     var isNLAvailable: Bool { get }
     var neverFreezeApps: [String] { get }
     var activeEffects: [AppKey: Effect] { get }
+    var ruleVetoes: [UUID: String] { get }
 
     func toggleECore(for appKey: AppKey)
     func toggleFreeze(for appKey: AppKey)
@@ -63,6 +67,12 @@ public protocol OhmDataSource: AnyObject {
     func deleteRule(_ rule: Rule)
     func addNeverFreezeApp(_ appName: String)
     func removeNeverFreezeApp(_ appName: String)
+    func vetoReason(for rule: Rule) -> String?
+}
+
+extension OhmDataSource {
+    public var ruleVetoes: [UUID: String] { [:] }
+    public func vetoReason(for rule: Rule) -> String? { ruleVetoes[rule.id] }
 }
 
 // MARK: - Preview Data Source
@@ -79,6 +89,7 @@ public final class PreviewDataSource: OhmDataSource {
     public var isNLAvailable: Bool
     public var neverFreezeApps: [String]
     public var activeEffects: [AppKey: Effect]
+    public var ruleVetoes: [UUID: String] = [:]
 
     public init(
         systemPower: SystemPower,
@@ -377,6 +388,11 @@ public final class OhmStore {
     public var isNLAvailable: Bool { dataSource.isNLAvailable }
     public var neverFreezeApps: [String] { dataSource.neverFreezeApps }
     public var activeEffects: [AppKey: Effect] { dataSource.activeEffects }
+    public var ruleVetoes: [UUID: String] { dataSource.ruleVetoes }
+
+    public func vetoReason(for rule: Rule) -> String? {
+        dataSource.vetoReason(for: rule)
+    }
 
     // User Actions
     public func toggleECore(for appKey: AppKey) {
