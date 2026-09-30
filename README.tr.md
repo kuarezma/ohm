@@ -69,6 +69,10 @@ Ohm'u yerel ortamınızda Xcode 27 ve XcodeGen ile derleyebilirsiniz:
    xcodebuild -project Ohm.xcodeproj -scheme Ohm -configuration Debug build
    ```
 
+### Önizleme Sürümleri (İmzasız)
+
+Deneysel önizleme paketleri (`Ohm-<sürüm>-preview.zip`) [GitHub Releases](https://github.com/kuarezma/ohm/releases) sayfasında pre-release olarak yayınlanmaktadır. Projenin henüz ücretli bir Apple Developer ID sertifikası bulunmadığından macOS Gatekeeper ilk açılışta uygulamayı engeller. Açılış adımları için [packaging/preview/FIRST-RUN.tr.md](./packaging/preview/FIRST-RUN.tr.md) kılavuzunu inceleyebilir ya da Terminal'den `xattr -dr com.apple.quarantine /Applications/Ohm.app` komutunu çalıştırabilirsiniz. Sisteminizde App Group kapsayıcı erişimi kısıtlanırsa, uygulamanın ücretsiz Personal Team ile kaynaktan derlenmesi önerilir.
+
 ### İmzalı Paketler ve Homebrew Cask
 
 - **İmzalı Sürüm Paketleri:** İlk imzalı sürümle birlikte GitHub Releases üzerinden dağıtılacaktır.

@@ -69,6 +69,10 @@ Ohm can be compiled locally using Xcode 27 and XcodeGen:
    xcodebuild -project Ohm.xcodeproj -scheme Ohm -configuration Debug build
    ```
 
+### Preview Releases (Unsigned)
+
+Experimental preview archives (`Ohm-<version>-preview.zip`) are published as pre-releases on [GitHub Releases](https://github.com/kuarezma/ohm/releases). Because Ohm does not yet have a paid Apple Developer ID, macOS Gatekeeper will block it on first launch. See [packaging/preview/FIRST-RUN.md](./packaging/preview/FIRST-RUN.md) for launch steps or run `xattr -dr com.apple.quarantine /Applications/Ohm.app`. If App Group container access is restricted on your machine, compiling from source with your free Personal Team is recommended.
+
 ### Pre-built Releases & Homebrew Cask
 
 - **Pre-built signed binaries:** Available with the first signed release on GitHub Releases.
