@@ -34,7 +34,7 @@ Her görevin model seçimi ve gerekçesi `Docs/PLAN.md` § "Görev tablosu"ndad�
 | T-050 | Site tasarım yönü ve metin taslağı | Opus 5.5 medium (şef) | CC 🔵2 | – | DONE | `Docs/SITE-BRIEF.md` |
 | T-051 | Site v1 kodu | Gemini 3.8 Flash high | AG 🔴3 | T-050 | DONE | 390/1440 px görüntü, konsol temiz, Lighthouse ≥95 |
 | T-052 | Site Türkçe sürümü | Gemini 3.8 Flash high | AG 🔴3 | T-051 | DONE | Şef okur |
-| T-060 | CI: build, test, notarize, appcast | Gemini 3.8 Flash high | AG 🔴3 | T-020 | TODO | Dry-run yeşil |
+| T-060 | CI: build, test, notarize (appcast: Sparkle kullanıcı kararı) | Gemini 3.8 Flash high | AG 🔴3 | T-020 | DONE | Dry-run yeşil; GitHub CI yeşil |
 | T-061 | Performans ölçümü (UI kabuğu referansı) | Gemini 3.8 Flash high | AG 🔴3 | T-030 | DONE | Hedef tablo dolar (`Docs/perf/T-061-idle.md`) |
 | T-061b | Performans ölçümü, runtime bağlı | Gemini 3.8 Flash high | AG 🔴3 | T-034 | DONE | Aynı yöntem; PLAN hafiflik hedefleri |
 | T-062 | Homebrew cask, README, katkı rehberi | Gemini 3.8 Flash high | AG 🔴3 | T-060 | TODO | `brew audit` temiz |
