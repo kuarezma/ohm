@@ -170,7 +170,8 @@ public final class SafetyPolicy {
     }
 
     /// Static part of the scope gate. Also used at rule registration (ADR 0003) so a target that can
-    /// never be frozen is never written into a rule.
+    /// fails this static gate is never written into a rule. Verified topology is a Governor runtime
+    /// veto until the rule registration UI is wired to that warning (ADR 0004, T-026b).
     public static func staticScopeVetoes(bundleID: String?, executablePath: String?,
                                          config: GovernorConfig) -> [FreezeVeto] {
         var v: [FreezeVeto] = []

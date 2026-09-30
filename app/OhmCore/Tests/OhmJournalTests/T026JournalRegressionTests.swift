@@ -45,12 +45,12 @@ struct T026JournalRegressionTests {
         let signaler = T026RecoverySignaler(boot: "boot-A")
         for _ in 0..<2 {
             let report = JournalRecovery.run(lock: lock, owner: owner, consumeNotices: false, signaler: signaler)
-            #expect(report.unverifiedBoot == [entry])
+            #expect(report.missingRecordedBoot == [entry] && report.unverifiedBoot.isEmpty && !report.needsRetry)
             #expect(!report.discardedForBoot && !report.rewriteFailed)
             let groups = JournalReader.read(path: paths.journal).openGroups()
             #expect(groups.count == 1)
             #expect(groups.first?.group == unknown && groups.first?.boot == nil && groups.first?.pids == [entry])
-            #expect(JournalReader.read(path: paths.journal).records.filter { $0.op == .recovered && $0.reason == "unverifiedBoot:1" }.count == 1,
+            #expect(JournalReader.read(path: paths.journal).records.filter { $0.op == .recovered && $0.reason == "missingRecordedBoot:1" }.count == 1,
                     "retrying the same unknown boot must not grow the journal with duplicate notices")
         }
         #expect(signaler.continued.isEmpty)
@@ -107,7 +107,7 @@ struct T026JournalRegressionTests {
             return reports[min(attempts, reports.count - 1)]
         }, pause: { delays.append($0) }, shouldStop: { attempts >= reports.count })
         #expect(attempts == reports.count)
-        #expect(delays == [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5, 5])
+        #expect(delays == [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8])
     }
 
     @Test("P1: spawned watcher rechecks the journal after a successful recovery report")

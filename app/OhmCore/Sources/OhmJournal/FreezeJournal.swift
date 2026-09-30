@@ -10,6 +10,14 @@ public protocol FreezeJournaling: AnyObject {
     /// Throws if the renewal failed; the journal is then unusable (T-024 #2).
     func compactIfIdle() throws
     var boot: String? { get }
+    var recoveryReport: RecoveryReport? { get }
+    /// Retries with the writer's already-held owner lock, refreshing its fd after any rename.
+    func retryRecovery(forceCloseUnverifiable: Bool) throws -> RecoveryReport?
+}
+
+extension FreezeJournaling {
+    public var recoveryReport: RecoveryReport? { nil }
+    public func retryRecovery(forceCloseUnverifiable: Bool) throws -> RecoveryReport? { nil }
 }
 
 /// Single writer of `journal.jsonl` (ADR 0004 § 5, D6). Holding an `OwnerLock` is a precondition.
@@ -17,7 +25,9 @@ public protocol FreezeJournaling: AnyObject {
 /// glued onto a partial line, become unparsable, and its SIGSTOP could never be recovered.
 public final class FreezeJournal: FreezeJournaling {
     public let paths: JournalPaths
-    public let boot: String?
+    public private(set) var boot: String?
+    public private(set) var recoveryReport: RecoveryReport?
+    private let recoverySignaler: any RecoverySignaling
     private let ownerLock: OwnerLock
     private let owner: JournalPid
     private var fd: Int32
@@ -28,12 +38,16 @@ public final class FreezeJournal: FreezeJournaling {
 
     /// Opens for append. Call `JournalRecovery.run` first: it leaves the file with an `open` record.
     /// Refuses a file whose last line is unterminated (appending would glue onto it).
-    public init(paths: JournalPaths, ownerLock: OwnerLock, owner: JournalPid) throws {
+    public init(paths: JournalPaths, ownerLock: OwnerLock, owner: JournalPid,
+                recoveryReport: RecoveryReport? = nil,
+                recoverySignaler: any RecoverySignaling = LiveRecoverySignaler()) throws {
         self.paths = paths
         self.ownerLock = ownerLock
         self.owner = owner
+        self.recoveryReport = recoveryReport
+        self.recoverySignaler = recoverySignaler
         let snapshot = JournalReader.read(path: paths.journal)
-        let currentBoot = ProcessProbe.bootSessionUUID()
+        let currentBoot = recoverySignaler.bootSessionUUID()
         // The writer must append under a verified open segment, even if boot probing starts
         // succeeding between recovery and opening this writer.
         boot = snapshot.records.last(where: { $0.op == .open })?.boot == currentBoot ? currentBoot : nil
@@ -46,6 +60,32 @@ public final class FreezeJournal: FreezeJournaling {
     }
 
     deinit { if fd >= 0 { close(fd) } }
+
+    public func retryRecovery(forceCloseUnverifiable: Bool = false) throws -> RecoveryReport? {
+        if let broken { throw broken }
+        // All active Governor groups must be undone before invoking recovery on the whole journal.
+        close(fd)
+        fd = -1
+        let report = JournalRecovery.run(lock: ownerLock, owner: owner, consumeNotices: false,
+                                         signaler: recoverySignaler,
+                                         forceCloseUnverifiable: forceCloseUnverifiable)
+        recoveryReport = report
+        if report.rewriteFailed {
+            broken = .rewriteFailed
+            throw JournalError.rewriteFailed
+        }
+        let snapshot = JournalReader.read(path: paths.journal)
+        let currentBoot = recoverySignaler.bootSessionUUID()
+        boot = snapshot.records.last(where: { $0.op == .open })?.boot == currentBoot ? currentBoot : nil
+        fd = open(paths.journal, O_WRONLY | O_APPEND | O_CLOEXEC)
+        if fd < 0 {
+            let error = JournalError.open(errno)
+            broken = error
+            throw error
+        }
+        seq = snapshot.lastSeq
+        return report
+    }
 
     public func append(_ record: JournalRecord, sync: Bool) throws {
         if let broken { throw broken }

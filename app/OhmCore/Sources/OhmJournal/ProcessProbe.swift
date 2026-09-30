@@ -37,7 +37,15 @@ public enum ProcessProbe {
         }
         if rc == 0 { return ri.ri_proc_start_abstime == id.startAbsTime ? .match : .mismatch }
         let e = errno
-        return e == ESRCH ? .gone : .unknown(e)
+        return failedIdentityProbe(error: e, uid: { uid(id.pid) }, ownUID: getuid())
+    }
+
+    /// EPERM may mean this pid was reused by a different user. Only a successful uid probe
+    /// establishes that mismatch; same-user or unreadable uid must remain unresolved.
+    static func failedIdentityProbe(error: Int32, uid: () -> uid_t?, ownUID: uid_t) -> IdentityStatus {
+        if error == ESRCH { return .gone }
+        if error == EPERM, let processUID = uid(), processUID != ownUID { return .mismatch }
+        return .unknown(error)
     }
 
     public static func identity(of pid: Int32) -> ProcessIdentity? {

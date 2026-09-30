@@ -3,6 +3,7 @@ import Dispatch
 import Foundation
 import OhmJournal
 import OhmModel
+import Synchronization
 
 public struct GovernorConfig: Sendable {
     public var minHiddenFloor = 300.0
@@ -68,7 +69,19 @@ public actor Governor: Governing {
     private var lastActive: [Int32: Date] = [:]
     private var graceUntil: [ProcessIdentity: Date] = [:]
     private var exitSources: [Int32: any DispatchSourceProcess] = [:]
+    private var exitIdentities: [Int32: ProcessIdentity] = [:]
     private var watcherSource: (any DispatchSourceProcess)?
+    private final class ExitObservation: Sendable {
+        let observedAt = Mutex<Date?>(nil)
+    }
+    private var exitObservations: [Int32: ExitObservation] = [:]
+    private struct HealthCheck {
+        let group: FrozenGroup
+        let deadline: Date
+        let exits: [ExitObservation]
+        let task: Task<Void, Never>
+    }
+    private var healthChecks: [UUID: HealthCheck] = [:]
 
     /// Undo that could not complete (failed SIGCONT / BG removal or probe error). The journal group
     /// stays open and the crash-handler table keeps the pids until every member is resolved (T-024 #1).
@@ -82,6 +95,11 @@ public actor Governor: Governing {
     private var pendingUndo: [UUID: PendingUndo] = [:]
     private var retryScheduled = false
     private var retryAttempt = 0
+    private var retryTask: Task<Void, Never>?
+    private var retryToken: UInt64 = 0
+    private var nextUndoRetry = Date.distantPast
+    private var nextRecoveryRetry = Date.distantPast
+    private var recoveryRetryAttempt = 0
 
     public init(config: GovernorConfig = GovernorConfig(),
                 journal: sending (any FreezeJournaling)?,
@@ -102,7 +120,9 @@ public actor Governor: Governing {
         policy = SafetyPolicy(probes: probes, config: config, health: health)
         freezer = Freezer(signaler: signaler, tree: tree, policy: policy, config: config)
         lane = ECoreLane(signaler: signaler)
-        if journal?.boot == nil { disabledReason = .journalUnwritable }
+        if journal == nil { disabledReason = .journalUnwritable }
+        else if journal?.boot == nil { disabledReason = .bootUnverified }
+        else if journal?.recoveryReport?.blocksEffects == true { disabledReason = .recoveryPending }
     }
 
     // MARK: Status (UI, CLI `ohm status`, tests)
@@ -222,6 +242,7 @@ public actor Governor: Governing {
         case let .eCore(pid, on, origin):
             if !on {
                 manualECore[pid] = nil
+                retryPending(force: true)
                 return removeECore(root: pid, reason: .user) ? .eCoreRemoved(groups: 1) : .notFound
             }
             guard let app = appControl.app(pid: pid) else { return .vetoed([.notRunning]) }
@@ -239,14 +260,45 @@ public actor Governor: Governing {
     /// and `journalUnwritable` E-core policies are removed as well (D2).
     public func thawAll(reason: ThawReason) -> ThawReport {
         generation &+= 1
+        let knownGroups = Set(groups.keys).union(lane.groups.values.map(\.id)).union(pendingUndo.keys)
         let withECore: Set<ThawReason> = [.quit, .powerOff, .protectionLost, .journalUnwritable]
-        return thawEverything(reason, includeECore: withECore.contains(reason))
+        var report = thawEverything(reason, includeECore: withECore.contains(reason) || reason == .user)
+        if reason == .user {
+            retryPending(force: true)
+            // Active groups are undone first. Recovery can now inspect the entire journal safely.
+            do {
+                if let recovered = try journal?.retryRecovery(forceCloseUnverifiable: true) {
+                    for (id, kind) in recovered.closedGroups where !knownGroups.contains(id) {
+                        switch kind {
+                        case .freeze: report.freezeGroups += 1
+                        case .eCore: report.eCoreGroups += 1
+                        }
+                    }
+                    let unresolved = Set(recovered.unresolved.map(\.identity))
+                    for (id, var pending) in pendingUndo {
+                        pending.members.filter { !unresolved.contains($0) }.forEach { ThawTable.remove($0.pid) }
+                        pending.members.removeAll { !unresolved.contains($0) }
+                        pendingUndo[id] = pending.members.isEmpty ? nil : pending
+                    }
+                    resetRetryIfIdle()
+                    updateRecoveryVeto(recovered)
+                }
+            } catch { disableEffects() }
+        }
+        return report
     }
 
     /// `applicationShouldTerminate`: no new effects, everything thawed and removed, synchronously.
     public func shutdown() -> ThawReport {
         shuttingDown = true
-        return thawAll(reason: .quit)
+        let report = thawAll(reason: .quit)
+        let checks = Array(healthChecks.values)
+        healthChecks.removeAll()
+        for check in checks {
+            check.task.cancel()
+            check.group.members.forEach { unwatchIfUnused($0) }
+        }
+        return report
     }
 
     // MARK: Workspace events (§ 7)
@@ -257,7 +309,7 @@ public actor Governor: Governing {
             lastActive[pid] = Date()
             // D5: activation always thaws; nothing can prevent it.
             if let id = groupByRoot[pid] { thawGroup(id, reason: .activation) }
-            if pendingUndo.values.contains(where: { $0.members.contains { $0.pid == pid } }) { retryPending() }
+            if pendingUndo.values.contains(where: { $0.members.contains { $0.pid == pid } }) { retryPending(force: true) }
             if let g = lane.group(root: pid), g.params.whileFrontmost == .release {
                 removeECore(root: pid, reason: .frontmost)
             }
@@ -291,11 +343,12 @@ public actor Governor: Governing {
                     continue
                 case .match: break
                 }
-                for h in g.helpers {
+                helperLoop: for h in g.helpers {
                     switch signaler.identityStatus(h) {
                     case .gone, .mismatch: processExited(h.pid)
                     case .unknown:
                         thawGroup(g.id, reason: .verifyFailed)
+                        break helperLoop
                     case .match: break
                     }
                 }
@@ -306,6 +359,7 @@ public actor Governor: Governing {
 
     /// Ambient tick (10 s, ADR 0004 § 8): wall-clock limits, new E-core helpers, pending rule effects.
     public func tick() async {
+        retryRecoveryIfDue()
         retryPending()
         // No effect may exist or grow without a verifiably ready watcher (D1, T-024 #5).
         guard protection.isReady() else {
@@ -314,6 +368,7 @@ public actor Governor: Governing {
                 continuation.yield(.protectionChanged(.none))
                 thawEverything(.protectionLost, includeECore: true)
             }
+            if protection.mode != .none { _ = await startProtection() }
             return
         }
         expireByWallClock()
@@ -427,7 +482,7 @@ public actor Governor: Governing {
         let now = Date()
         if op.token != generation { v.append(.superseded) }
         if !protection.isReady() { v.append(.protectionNotReady) }
-        if journal == nil || disabledReason != nil { v.append(.journalUnwritable) }
+        if journal == nil || disabledReason != nil { v.append(disabledReason ?? .journalUnwritable) }
         if powerOffInProgress { v.append(.powerOffInProgress) }
         if let q = postWakeUntil, now < q { v.append(.postWakeQuiet) }
         if shuttingDown { v.append(.shuttingDown) }
@@ -476,7 +531,7 @@ public actor Governor: Governing {
         groups[g.id] = g
         groupByRoot[g.root.pid] = g.id
         graceUntil[g.root] = nil
-        for m in g.members { watchExit(m.pid) }
+        for m in g.members { watchExit(m) }
         let id = g.id
         let delay = g.deadline.timeIntervalSinceNow
         Task { [weak self] in
@@ -485,18 +540,39 @@ public actor Governor: Governing {
         }
     }
 
-    private func watchExit(_ pid: Int32) {
-        guard exitSources[pid] == nil else { return }
+    private func watchExit(_ identity: ProcessIdentity) {
+        let pid = identity.pid
+        if exitIdentities[pid] == identity { return }
+        unwatch(pid)
         let src = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
+        let observation = ExitObservation()
         src.setEventHandler { [weak self] in
-            Task { await self?.processExited(pid) }
+            let observedAt = Date()
+            // Save definitive evidence before scheduling the actor hop. The health timer may
+            // run before that Task under load; its snapshot still sees this exit.
+            observation.observedAt.withLock { $0 = observedAt }
+            Task { await self?.processExited(pid, authoritative: true, identity: identity, exitedAt: observedAt) }
         }
         src.resume()
         exitSources[pid] = src
+        exitIdentities[pid] = identity
+        exitObservations[pid] = observation
     }
 
     private func unwatch(_ pid: Int32) {
         exitSources.removeValue(forKey: pid)?.cancel()
+        exitIdentities[pid] = nil
+        exitObservations[pid] = nil
+    }
+
+    /// A thaw keeps its identity-bound exit source through the health window. A newer freeze or
+    /// E-core group may share that source, so an expired check must not cancel their protection.
+    private func unwatchIfUnused(_ identity: ProcessIdentity) {
+        guard exitIdentities[identity.pid] == identity,
+              !groups.values.contains(where: { $0.members.contains(identity) }),
+              !lane.groups.values.contains(where: { $0.pids.contains(identity) }),
+              !healthChecks.values.contains(where: { $0.group.members.contains(identity) }) else { return }
+        unwatch(identity.pid)
     }
 
     private func expire(_ id: UUID) {
@@ -511,19 +587,46 @@ public actor Governor: Governing {
 
     /// A frozen root that dies takes its group down: helpers are continued immediately (§ 4).
     /// A dying helper just leaves the group.
-    private func processExited(_ pid: Int32) {
-        unwatch(pid)
-        lane.dropMember(pid)
-        if lane.group(root: pid) != nil { removeECore(root: pid, reason: .terminated) }
-        if let id = groupByRoot[pid] {
-            thawGroup(id, reason: .terminated)
+    private func processExited(_ pid: Int32, authoritative: Bool = false, identity: ProcessIdentity? = nil, exitedAt: Date? = nil) {
+        if authoritative, exitIdentities[pid] == identity { unwatch(pid) }
+        if authoritative, let identity {
+            // NOTE_EXIT is definitive even if the post-thaw rusage probe is unreadable.
+            for check in healthChecks.values where (exitedAt ?? Date()) <= check.deadline && check.group.members.contains(identity) {
+                markFreezeUnsafe(check.group)
+            }
+            for (id, var pending) in pendingUndo where pending.members.contains(identity) {
+                pending.members.removeAll { $0 == identity }
+                ThawTable.remove(pid)
+                if pending.members.isEmpty {
+                    do {
+                        try journal?.append(JournalRecord(op: pending.kind == .freeze ? .thaw : .ecoreOff,
+                                                          group: id, reason: ThawReason.terminated.rawValue), sync: false)
+                        pendingUndo[id] = nil
+                    } catch { disableEffects() }
+                } else { pendingUndo[id] = pending }
+            }
+            resetRetryIfIdle()
+        }
+        lane.dropMember(pid, authoritative: authoritative, identity: identity)
+        if let g = lane.group(root: pid), identity == nil || identity == g.app.identity {
+            removeECore(root: pid, reason: .terminated)
+        }
+        if let id = groupByRoot[pid], identity == nil || identity == groups[id]?.root {
+            if authoritative {
+                // NOTE_EXIT is tied to the old process, so never SIGCONT a reused root pid.
+                ThawTable.remove(pid)
+            }
+            thawGroup(id, reason: .terminated, exitedIdentity: authoritative ? identity : nil)
             return
         }
         for (id, var g) in groups where g.helpers.contains(where: { $0.pid == pid }) {
             guard let helper = g.helpers.first(where: { $0.pid == pid }) else { continue }
-            switch signaler.identityStatus(helper) {
-            case .gone, .mismatch: break
-            case .unknown, .match: continue
+            if let identity, helper != identity { continue }
+            if !authoritative {
+                switch signaler.identityStatus(helper) {
+                case .gone, .mismatch: break
+                case .unknown, .match: continue
+                }
             }
             g.helpers.removeAll { $0.pid == pid }
             groups[id] = g
@@ -533,14 +636,22 @@ public actor Governor: Governing {
 
     /// Synchronous, no suspension (§ 4 thaw).
     @discardableResult
-    private func thawGroup(_ id: UUID, reason: ThawReason) -> Bool {
+    private func thawGroup(_ id: UUID, reason: ThawReason, exitedIdentity: ProcessIdentity? = nil) -> Bool {
         guard let g = groups.removeValue(forKey: id) else { return false }
         groupByRoot[g.root.pid] = nil
-        g.members.forEach { unwatch($0.pid) }
+        let noHealthCheck: Set<ThawReason> = [.terminated, .quit, .powerOff, .rollback]
+        if !noHealthCheck.contains(reason) { scheduleHealthCheck(g) }
+        g.members.forEach { unwatchIfUnused($0) }
         manualFreezes.remove(g.root)
         var journalFailed = false
         do {
-            let unresolved = try freezer.thaw(g, reason: reason, journal: journal)
+            let unresolved: [ProcessIdentity]
+            if let exitedIdentity {
+                unresolved = try freezer.finish(g.id, ordered: (g.helpers.reversed() + [g.root]).filter { $0 != exitedIdentity },
+                                                 reason: reason, journal: journal)
+            } else {
+                unresolved = try freezer.thaw(g, reason: reason, journal: journal)
+            }
             if !unresolved.isEmpty {
                 keepPending(PendingUndo(kind: .freeze, id: g.id, members: unresolved, reason: reason))
             }
@@ -549,8 +660,6 @@ public actor Governor: Governing {
             graceUntil[g.root] = Date().addingTimeInterval(config.refreezeGrace)
         }
         continuation.yield(.thawed(group: id, reason: reason))
-        let noHealthCheck: Set<ThawReason> = [.terminated, .quit, .powerOff, .rollback]
-        if !noHealthCheck.contains(reason) { scheduleHealthCheck(g) }
         if journalFailed { disableEffects() }
         compactIfIdle()
         return true
@@ -570,7 +679,8 @@ public actor Governor: Governing {
 
     /// Retries every unresolved SIGCONT / BG removal; writes the thaw / ecoreOff record only once a
     /// group is fully resolved.
-    private func retryPending() {
+    private func retryPending(force: Bool = false) {
+        guard force || Date() >= nextUndoRetry else { return }
         for (id, p) in pendingUndo {
             do {
                 let left: [ProcessIdentity]
@@ -590,41 +700,75 @@ public actor Governor: Governing {
                 disableEffects()
             }
         }
-        if pendingUndo.isEmpty { retryAttempt = 0 } else { scheduleRetry() }
+        if pendingUndo.isEmpty { resetRetryIfIdle() } else { scheduleRetry() }
     }
 
-    /// Bounded backoff: 0.1 s, 0.2 s, … up to 5 s between attempts.
+    private func resetRetryIfIdle() {
+        guard pendingUndo.isEmpty else { return }
+        retryTask?.cancel()
+        retryTask = nil
+        retryScheduled = false
+        retryAttempt = 0
+        retryToken &+= 1
+        nextUndoRetry = .distantPast
+    }
+
+    /// Persistent failures back off to five minutes; tick cannot bypass the scheduled deadline.
     private func scheduleRetry() {
         guard !retryScheduled else { return }
         retryScheduled = true
-        let delay = min(5.0, 0.1 * pow(2, Double(retryAttempt)))
-        retryAttempt += 1
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            await self?.retryTimerFired()
+        let delay = min(300.0, 0.1 * pow(2, Double(retryAttempt)))
+        retryAttempt = min(retryAttempt + 1, 12)
+        nextUndoRetry = Date().addingTimeInterval(delay)
+        retryToken &+= 1
+        let token = retryToken
+        retryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            await self?.retryTimerFired(token)
         }
     }
 
-    private func retryTimerFired() {
+    private func retryTimerFired(_ token: UInt64) {
+        guard token == retryToken else { return }
+        retryTask = nil
         retryScheduled = false
-        retryPending()
+        retryPending(force: true)
     }
 
-    /// § 3: a member that ended within 5 s of a thaw marks the bundle `freezeUnsafe`.
+    /// § 3: keep NOTE_EXIT as health evidence until the post-thaw window closes.
     private func scheduleHealthCheck(_ g: FrozenGroup) {
+        guard g.app.bundleID != nil else { return }
         let delay = config.healthCheckDelay
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            await self?.healthCheck(g)
+        let task = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            await self?.healthCheck(g.id)
         }
+        let exits = g.members.compactMap { exitIdentities[$0.pid] == $0 ? exitObservations[$0.pid] : nil }
+        healthChecks[g.id] = HealthCheck(group: g, deadline: Date().addingTimeInterval(delay), exits: exits, task: task)
     }
 
-    private func healthCheck(_ g: FrozenGroup) {
-        guard let bundle = g.app.bundleID else { return }
-        if g.members.contains(where: { !ProcessProbe.isLive($0) }) {
-            health.mark(bundle)
-            continuation.yield(.freezeUnsafeMarked(bundleID: bundle))
+    private func healthCheck(_ id: UUID) {
+        guard let check = healthChecks.removeValue(forKey: id) else { return }
+        let g = check.group
+        let observedExit = check.exits.contains { observation in
+            observation.observedAt.withLock { $0.map { $0 <= check.deadline } ?? false }
         }
+        if observedExit || g.members.contains(where: {
+            switch signaler.identityStatus($0) {
+            case .gone, .mismatch: true
+            case .unknown: false
+            case .match: ProcessProbe.bsdInfo($0.pid)?.pbi_status == UInt32(SZOMB)
+            }
+        }) {
+            markFreezeUnsafe(g)
+        }
+        g.members.forEach { unwatchIfUnused($0) }
+    }
+
+    private func markFreezeUnsafe(_ g: FrozenGroup) {
+        guard let bundle = g.app.bundleID, !health.isUnsafe(bundle) else { return }
+        health.mark(bundle)
+        continuation.yield(.freezeUnsafeMarked(bundleID: bundle))
     }
 
     @discardableResult
@@ -645,7 +789,7 @@ public actor Governor: Governing {
 
     /// Journal write failed: freeze and E-core are disabled and existing effects undone (§ 5).
     private func disableEffects() {
-        guard disabledReason == nil else { return }
+        guard disabledReason != .journalUnwritable else { return }
         disabledReason = .journalUnwritable
         generation &+= 1
         continuation.yield(.effectsDisabled(.journalUnwritable))
@@ -658,7 +802,8 @@ public actor Governor: Governing {
     private func ensureECore(app: RunningAppInfo, key: AppKey?, origin: EffectOrigin, params: ECoreParams) -> GovernorOutcome? {
         let pid = app.pid
         lane.updateParams(root: pid, params: params)
-        if params.whileFrontmost == .release {
+        let effectiveParams = lane.group(root: pid)?.params ?? params
+        if effectiveParams.whileFrontmost == .release {
             let recentlyActive = lastActive[pid].map { Date().timeIntervalSince($0) < config.eCoreFrontmostDelay } ?? false
             if appControl.isActive(pid: pid) || recentlyActive {
                 removeECore(root: pid, reason: .frontmost)
@@ -667,7 +812,7 @@ public actor Governor: Governing {
         }
         var v: [FreezeVeto] = []
         if !protection.isReady() { v.append(.protectionNotReady) }
-        if journal == nil || disabledReason != nil { v.append(.journalUnwritable) }
+        if journal == nil || disabledReason != nil { v.append(disabledReason ?? .journalUnwritable) }
         if powerOffInProgress { v.append(.powerOffInProgress) }
         if shuttingDown { v.append(.shuttingDown) }
         switch signaler.identityStatus(app.identity) {
@@ -686,15 +831,39 @@ public actor Governor: Governing {
         do {
             if lane.group(root: pid) != nil {
                 try lane.extend(root: pid, with: helpers, journal: journal)
+                lane.group(root: pid)?.pids.forEach { watchExit($0) }
                 return nil
             }
             let id = try lane.apply(app: app, key: key, origin: origin, params: params, helpers: helpers, journal: journal)
-            watchExit(pid)
+            lane.group(root: pid)?.pids.forEach { watchExit($0) }
             continuation.yield(.eCoreApplied(group: id, bundleID: app.bundleID))
             return .eCoreApplied(group: id)
         } catch {
             disableEffects()
             return .vetoed([.journalUnwritable])
+        }
+    }
+
+    /// The journal owns owner.lock for its lifetime. No second lock acquisition or await here.
+    private func retryRecoveryIfDue() {
+        guard disabledReason == .bootUnverified || disabledReason == .recoveryPending,
+              journal?.recoveryReport?.needsRetry == true || journal?.boot == nil,
+              Date() >= nextRecoveryRetry, groups.isEmpty, lane.groups.isEmpty, pendingUndo.isEmpty else { return }
+        nextRecoveryRetry = Date().addingTimeInterval(min(300, 5 * pow(2, Double(recoveryRetryAttempt))))
+        recoveryRetryAttempt = min(recoveryRetryAttempt + 1, 6)
+        do {
+            if let report = try journal?.retryRecovery(forceCloseUnverifiable: false) { updateRecoveryVeto(report) }
+        } catch { disableEffects() }
+    }
+
+    private func updateRecoveryVeto(_ report: RecoveryReport) {
+        guard disabledReason != .journalUnwritable else { return }
+        if journal?.boot == nil { disabledReason = .bootUnverified }
+        else if report.blocksEffects { disabledReason = .recoveryPending }
+        else {
+            disabledReason = nil
+            recoveryRetryAttempt = 0
+            generation &+= 1
         }
     }
 
