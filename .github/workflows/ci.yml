@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'site/**'
+      - 'Docs/**'
+      - '**.md'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - 'site/**'
+      - 'Docs/**'
+      - '**.md'
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: xcode-27
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 27
+        run: |
+          if [ -d "/Applications/Xcode_27.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_27.app
+          elif [ -d "/Applications/Xcode_27.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_27.0.app
+          fi
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: |
+          if ! command -v xcodegen &> /dev/null; then
+            brew install xcodegen
+          fi
+
+      - name: Run CI Build & Test (xcodegen, swift test, Xcode Debug build)
+        run: |
+          chmod +x scripts/ci/build-test.sh
+          scripts/ci/build-test.sh
