@@ -151,6 +151,9 @@ Olaylar 250 ms içinde birleştirilir (coalescing). Motor her değerlendirmede `
 
 **Uzlaştırma (reconciliation):** `RuleEngine`, her aktif kuralın hedeflerini `AppKey`'e çözer ve `DesiredState` üretir. Bu durum her uygulama için istenen etkiler kümesini ve bunların kaynaklarını içerir. `Governor.reconcile` gerçek durumu istenen duruma getirir. Governor yalnız **kendi uyguladığı** etkiyi geri alır; bunun için kendi kaydını tutar. T-012, `getpriority(PRIO_DARWIN_PROCESS, pid)` çağrısının BG politikası uygulanmışken de 0 döndürdüğünü gösterdi. Bu yüzden politika durumu sistemden okunamaz, `ECoreLane`'in kaydı (ve journal, ADR 0004) tek doğruluk kaynağıdır. Buradan çıkan bilinen sınır: Başka bir araç (ör. `taskpolicy -b`, App Tamer) aynı sürece BG politikası koyduysa Ohm bunu ayırt edemez. Ohm kendi E-core'unu kaldırırken `0` yazar ve o aracın politikasını da kaldırmış olur. Arayüz bu durumu E-core açıklamasında belirtir. Hedef uygulama o anda çalışmıyorsa istek beklemede kalır ve uygulama açılınca uygulanır.
 
+- **Paketsiz kaçak süreçler sınırlaması (T-035):** `.runaway` hedefli kurallar yalnız paketli (`appKey.kind == .bundleID`) uygulamalara çözülür. Paketsiz kaçak süreçler (CLI araçları vb.) kural motoru tarafından hedeflenmez; süreç modelinde (`RunawayProcessInfo.ruleNote`) "kural bu süreci hedefleyemez" notu tutulur.
+- **Elle eylem ve kural uzlaştırması ayrımı (T-035):** Kullanıcının doğrudan arayüzden tetiklediği manuel eylemler `Governor.perform` yolunda (`.manual` kökeniyle) bağımsız kalır; `ManualContribution` kural reconcile'ına karıştırılmaz. `Governor.reconcile` yalnızca `.rule` kökenli seviye etkilerini yönetir.
+
 ### 3. Çatışma çözümü
 
 Bir uygulama için sıralama `none < eCore < freeze` şeklindedir.

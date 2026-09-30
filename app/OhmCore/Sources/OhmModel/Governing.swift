@@ -30,7 +30,7 @@ extension EffectOrigin {
 /// `protectionLost`, `journalUnwritable` and `frontmost` are additions (see ADR 0004 T-023 notes).
 public enum ThawReason: String, Sendable, Codable {
     case activation, ruleEnded, user, maxDuration, quit, powerOff, terminated, verifyFailed, recovery
-    case rollback, protectionLost, journalUnwritable, frontmost
+    case rollback, protectionLost, journalUnwritable, frontmost, userNeverList
 }
 
 /// Every reason a freeze can be refused (ADR 0004 § 2 scope gate, dynamic vetoes and § 4 admissible()).

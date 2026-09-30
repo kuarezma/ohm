@@ -139,6 +139,19 @@ public actor Governor: Governing {
     public var eCoreRootPids: [Int32] { lane.groups.keys.sorted() }
     public func eCoreMembers(root: Int32) -> [Int32]? { lane.group(root: root)?.pids.map(\.pid) }
 
+    /// Dynamic user never-freeze list (ADR 0004 D4, Rev 1).
+    public func setUserNeverFreeze(_ bundleIDs: Set<String>) {
+        policy.setUserNeverFreeze(bundleIDs)
+        generation &+= 1
+        for (id, g) in groups {
+            let bundleMatches = g.app.bundleID.map { bundleIDs.contains($0) } ?? false
+            let keyMatches = g.key.map { $0.kind == .bundleID && bundleIDs.contains($0.value) } ?? false
+            if bundleMatches || keyMatches {
+                thawGroup(id, reason: .userNeverList)
+            }
+        }
+    }
+
     // MARK: Protection (§ 6)
 
     /// Chooses the protection mode; call at launch and when SMAppService status changes.

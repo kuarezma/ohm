@@ -15,7 +15,11 @@ struct OhmApp: App {
                   seconds.isFinite, seconds > 0, seconds <= 86_400 else {
                 Self.fail("--runtime-smoke için 0 ile 86400 arasında saniye belirtin.")
             }
-            Self.runHeadless(seconds: seconds)
+            var rulesFile: String? = nil
+            if let rIndex = CommandLine.arguments.firstIndex(of: "--rules-file"), CommandLine.arguments.count > rIndex + 1 {
+                rulesFile = CommandLine.arguments[rIndex + 1]
+            }
+            Self.runHeadless(seconds: seconds, rulesFile: rulesFile)
         }
         if CommandLine.arguments.contains("--runtime-self-check") {
             _ = NSApplication.shared
@@ -54,7 +58,7 @@ struct OhmApp: App {
         exit(1)
     }
 
-    private static func runHeadless(seconds: Double) -> Never {
+    private static func runHeadless(seconds: Double, rulesFile: String? = nil) -> Never {
         // WatcherProtection inherits stdout, and thawd logs there. Keep the JSON destination in
         // a close-on-exec descriptor and route all runtime/watcher diagnostics to stderr.
         let jsonDescriptor = dup(STDOUT_FILENO)
@@ -71,12 +75,13 @@ struct OhmApp: App {
         bridge.setInteractive(true)
         Task(priority: .utility) {
             do {
-                let runtime = try await OhmRuntime.make(source: nil, smoke: true)
+                let runtime = try await OhmRuntime.make(source: nil, smoke: true, rulesFile: rulesFile)
                 await runtime.start(workspace: bridge.events)
                 try await Task.sleep(for: .seconds(seconds))
+                let report = try await runtime.smokeReport()
                 bridge.stop()
                 await runtime.shutdown()
-                let data = try JSONEncoder().encode(await runtime.smokeReport())
+                let data = try JSONEncoder().encode(report)
                 guard let json = String(data: data, encoding: .utf8) else {
                     Self.fail("Smoke JSON çıktısı oluşturulamadı.")
                 }

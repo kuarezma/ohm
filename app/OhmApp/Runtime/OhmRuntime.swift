@@ -5,6 +5,7 @@ import OhmGovernor
 import OhmJournal
 import OhmLedger
 import OhmModel
+import OhmRules
 import OhmSampling
 import OSLog
 
@@ -23,6 +24,11 @@ struct RuntimeSmokeReport: Sendable, Encodable {
     let watts: Double
     let runaways: Int
     let protection: String
+    let rules: Int
+    let rulesActive: Int
+    let lastDesired: String
+    let applied: [String]
+    let vetoes: [String]
 }
 
 /// Kept separate from the main actor and from the cooperative executor for SQLite reads.
@@ -61,6 +67,9 @@ actor OhmRuntime {
     private let forecaster = BatteryForecaster()
     private let detector = RunawayDetector()
     private let governor: Governor
+    private let ruleStore: RuleStore
+    private let ruleEngine: RuleEngine
+    private let contextBridge: ContextBridge?
     private weak var source: LiveDataSource?
     private var tasks: [Task<Void, Never>] = []
     private var stopping = false
@@ -76,18 +85,30 @@ actor OhmRuntime {
     private let startedAt = Date()
     private var lastError: String?
     private var neverFreeze: Set<String> = []
+    private var lastBatteryState: BatteryState?
+    private var lastThermalLevel: ThermalLevel = .nominal
+    private var lastEvaluation: RuleEvaluation?
+    private var lastDesiredState = DesiredState()
+    private var ruleVetoes: [UUID: String] = [:]
+    private var lastVetoList: [String] = []
+    private var evaluationTask: Task<Void, Never>?
+    private var deadlineTask: Task<Void, Never>?
 
     private init(engine: SamplingEngine, ledger: EnergyLedger, reader: RuntimeLedgerReader,
-                 governor: Governor, source: LiveDataSource?) {
+                 governor: Governor, ruleStore: RuleStore, ruleEngine: RuleEngine,
+                 contextBridge: ContextBridge?, source: LiveDataSource?) {
         self.engine = engine
         self.ledger = ledger
         self.reader = reader
         self.governor = governor
+        self.ruleStore = ruleStore
+        self.ruleEngine = ruleEngine
+        self.contextBridge = contextBridge
         self.source = source
     }
 
     @concurrent
-    static func make(source: LiveDataSource?, smoke: Bool = false) async throws -> OhmRuntime {
+    static func make(source: LiveDataSource?, smoke: Bool = false, rulesFile: String? = nil, ruleStore: RuleStore? = nil) async throws -> OhmRuntime {
         guard let group = appGroupIdentifier(),
               let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else {
             throw RuntimeError.appGroupUnavailable
@@ -110,8 +131,25 @@ actor OhmRuntime {
         let governor = Governor(config: config, journal: journal,
                                 appControl: WorkspaceAppController(),
                                 protection: WatcherProtection(paths: .standard, executable: executable))
+
+        let store: RuleStore
+        if let ruleStore {
+            store = ruleStore
+        } else if let rulesFile {
+            store = RuleStore(fileURL: URL(fileURLWithPath: rulesFile))
+        } else {
+            let url = RuleStore.defaultRulesURL() ?? container.appendingPathComponent("rules.json")
+            store = RuleStore(fileURL: url)
+        }
+        let persisted = await store.load()
+        let ruleEngine = RuleEngine(rules: persisted.rules)
+        let contextBridge = await MainActor.run { ContextBridge() }
+
         let runtime = OhmRuntime(engine: SamplingEngine.makeDefault(cadence: smoke ? .interactive : .ambient),
-                                 ledger: ledger, reader: reader, governor: governor, source: source)
+                                 ledger: ledger, reader: reader, governor: governor,
+                                 ruleStore: store, ruleEngine: ruleEngine,
+                                 contextBridge: contextBridge, source: source)
+        await runtime.setNeverFreeze(persisted.neverFreeze)
         return runtime
     }
 
@@ -141,7 +179,16 @@ actor OhmRuntime {
                 await self?.publishEffects()
             }
         })
+        if let contextBridge {
+            tasks.append(Task { [weak self] in
+                for await trigger in contextBridge.triggers {
+                    guard !Task.isCancelled else { break }
+                    await self?.handleContextTrigger(trigger)
+                }
+            })
+        }
         await engine.start()
+        await evaluateRules()
         if !stopping, source != nil {
             Logger(subsystem: "dev.ohm", category: "runtime")
                 .notice("runtime started protection=\(protection.rawValue, privacy: .public)")
@@ -192,6 +239,14 @@ actor OhmRuntime {
             let snapshot = DashboardSnapshot(tick: tick, forecastMinutes: await forecaster.forecast()?.remainingMinutes,
                                              receipt: receipt, runaways: await detector.currentRunaways,
                                              activeEffects: await effects(), error: lastError)
+            let batteryChanged = lastBatteryState == nil ||
+                lastBatteryState?.source != tick.battery.source ||
+                lastBatteryState?.percent != tick.battery.percent
+            lastBatteryState = tick.battery
+            lastThermalLevel = tick.thermal
+            if batteryChanged || !pendingRunawayEvents.isEmpty {
+                triggerRuleEvaluation()
+            }
             guard !stopping else { return }
             await source?.apply(snapshot, events: pendingRunawayEvents)
         })
@@ -202,8 +257,16 @@ actor OhmRuntime {
     private func workspace(_ event: RuntimeWorkspaceEvent) async {
         guard !stopping else { return }
         switch event {
-        case .applications(let apps): applications = apps
-        case .governor(let event): await governor.handle(event)
+        case .applications(let apps):
+            applications = apps
+            triggerRuleEvaluation()
+        case .governor(let event):
+            await governor.handle(event)
+            if case .activated = event {
+                triggerRuleEvaluation()
+            } else if case .deactivated = event {
+                triggerRuleEvaluation()
+            }
         case .cadence(let cadence):
             receiptRequested = cadence == .interactive || receiptRequested
             await engine.setCadence(cadence)
@@ -303,11 +366,165 @@ actor OhmRuntime {
         }
     }
 
-    func setNeverFreeze(_ names: [String]) { neverFreeze = Set(names) }
+    private func handleContextTrigger(_ trigger: ContextTrigger) async {
+        guard !stopping else { return }
+        switch trigger {
+        case .thermal(let level):
+            lastThermalLevel = level
+            triggerRuleEvaluation()
+        case .powerSource:
+            triggerRuleEvaluation()
+        case .deadline:
+            triggerRuleEvaluation(delay: 0)
+        }
+    }
+
+    private func triggerRuleEvaluation(delay: TimeInterval = 0.250) {
+        guard !stopping else { return }
+        evaluationTask?.cancel()
+        evaluationTask = Task { [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(for: .milliseconds(Int(delay * 1000)))
+            }
+            guard !Task.isCancelled else { return }
+            await self?.evaluateRules()
+        }
+    }
+
+    private func evaluateRules() async {
+        guard !stopping else { return }
+        let powerSourceKind: PowerSourceKind = switch lastBatteryState?.source {
+        case .battery: .battery
+        case .ac: .ac
+        case .unknown, .none: .ac
+        }
+        let batteryPercent = lastBatteryState?.percent ?? 100
+        let thermal = lastThermalLevel
+
+        var frontmostAppRef: AppRef? = nil
+        if let front = applications.first(where: \.frontmost) {
+            frontmostAppRef = AppRef(
+                bundleID: front.key.kind == .bundleID ? front.key.value : nil,
+                executableName: front.key.kind == .executableName ? front.key.value : nil,
+                displayName: front.name
+            )
+        }
+
+        let runaways = await detector.currentRunaways
+        let runawayApps: [AppRef] = runaways.values.compactMap { runaway in
+            guard runaway.app.kind == .bundleID else { return nil }
+            return AppRef(bundleID: runaway.app.value, displayName: runaway.displayName)
+        }
+
+        let runningApps: [AppRef] = applications.map { app in
+            AppRef(
+                bundleID: app.key.kind == .bundleID ? app.key.value : nil,
+                executableName: app.key.kind == .executableName ? app.key.value : nil,
+                displayName: app.name
+            )
+        }
+
+        let context = RuleContext(
+            powerSource: powerSourceKind,
+            batteryPercent: batteryPercent,
+            thermalLevel: thermal,
+            frontmostApp: frontmostAppRef,
+            now: Date(),
+            isFocusOn: false,
+            activeFocusProfile: nil,
+            runawayApps: runawayApps,
+            runningApps: runningApps
+        )
+
+        let evaluation = await ruleEngine.evaluate(context)
+        lastEvaluation = evaluation
+        lastDesiredState = evaluation.desiredState
+
+        if let deadline = evaluation.nextDeadline {
+            scheduleDeadline(deadline)
+        }
+
+        let report = await governor.reconcile(evaluation.desiredState)
+
+        var newRuleVetoes: [UUID: String] = [:]
+        var newVetoList: [String] = []
+        for (appKey, outcome) in report.outcomes.sorted(by: { $0.key.value < $1.key.value }) {
+            if case .vetoed(let reasons) = outcome {
+                var seen = Set<String>()
+                let uniqueReasons = reasons.map(LiveDataSource.vetoMessage).filter { seen.insert($0).inserted }
+                let msg = uniqueReasons.joined(separator: ", ")
+                newVetoList.append("\(appKey.value):\(msg)")
+                if let effect = evaluation.desiredState.effects[appKey] {
+                    for (_, origins) in effect.origins {
+                        for origin in origins {
+                            if case .rule(let ruleID) = origin {
+                                newRuleVetoes[ruleID] = msg
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ruleVetoes = newRuleVetoes
+        lastVetoList = newVetoList
+        await source?.updateRuleVetoes(newRuleVetoes)
+        await publishEffects()
+    }
+
+    private func scheduleDeadline(_ date: Date) {
+        deadlineTask?.cancel()
+        let delay = date.timeIntervalSinceNow
+        guard delay > 0 else {
+            triggerRuleEvaluation(delay: 0)
+            return
+        }
+        deadlineTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await self?.evaluateRules()
+        }
+    }
+
+    func setRules(_ rules: [Rule]) async {
+        await ruleEngine.update(rules: rules)
+        triggerRuleEvaluation(delay: 0)
+    }
+
+    func setNeverFreeze(_ names: [String]) async {
+        neverFreeze = Set(names)
+        var bundleIDs = Set<String>()
+        for name in names {
+            bundleIDs.insert(name)
+            for app in applications {
+                if app.name.localizedCaseInsensitiveCompare(name) == .orderedSame, app.key.kind == .bundleID {
+                    bundleIDs.insert(app.key.value)
+                }
+            }
+        }
+        await governor.setUserNeverFreeze(bundleIDs)
+        triggerRuleEvaluation(delay: 0)
+    }
+
+    nonisolated static func formatDesired(_ desired: DesiredState) -> String {
+        if desired.effects.isEmpty { return "none" }
+        return desired.effects.sorted(by: { $0.key.value < $1.key.value }).map { key, effect in
+            let effStr: String = switch effect.highestEffect {
+            case .freeze: "freeze"
+            case .eCore: "eCore"
+            case .none: "none"
+            }
+            return "\(key.value)=\(effStr)"
+        }.joined(separator: ",")
+    }
 
     func shutdown() async {
         guard !stopping else { return }
         stopping = true
+        evaluationTask?.cancel()
+        deadlineTask?.cancel()
+        evaluationTask = nil
+        deadlineTask = nil
+        await MainActor.run { contextBridge?.stop() }
         _ = await governor.shutdown()
         await engine.stop()
         let running = tasks
@@ -320,10 +537,44 @@ actor OhmRuntime {
 
     func smokeReport() async throws -> RuntimeSmokeReport {
         if let lastError { throw RuntimeError.failure(lastError) }
-        return RuntimeSmokeReport(ticks: ticks,
-                                  ledgerMinuteRows: try await reader.minuteRows(since: startedAt, until: Date()),
-                                  watts: watts, runaways: await detector.currentRunaways.count,
-                                  protection: await governor.protectionMode.rawValue)
+        let currentRules = await ruleStore.rules
+        let activeCount = currentRules.filter { lastEvaluation?.ruleStates[$0.id] == .active }.count
+        let desiredStr = Self.formatDesired(lastDesiredState)
+
+        var appliedList: [String] = []
+        let eCoreRoots = await governor.eCoreRootPids
+        for root in eCoreRoots {
+            let members = await governor.eCoreMembers(root: root) ?? [root]
+            let bundle: String
+            if let app = applications.first(where: { $0.identity.pid == root }) {
+                bundle = app.key.value
+            } else if let vis = visibility.apps.first(where: { $0.value.processes.contains { $0.pid == root } }) {
+                bundle = vis.key.value
+            } else if let ra = NSRunningApplication(processIdentifier: root), let bid = ra.bundleIdentifier {
+                bundle = bid
+            } else {
+                bundle = "pid-\(root)"
+            }
+            for pid in members {
+                let prio = getpriority(PRIO_DARWIN_PROCESS, id_t(pid))
+                let bg = prio != 0 ? 1 : 0
+                appliedList.append("\(bundle)=eCore pid=\(pid) bg=\(bg)")
+            }
+        }
+        appliedList.sort()
+
+        return RuntimeSmokeReport(
+            ticks: ticks,
+            ledgerMinuteRows: try await reader.minuteRows(since: startedAt, until: Date()),
+            watts: watts,
+            runaways: await detector.currentRunaways.count,
+            protection: await governor.protectionMode.rawValue,
+            rules: currentRules.count,
+            rulesActive: activeCount,
+            lastDesired: desiredStr,
+            applied: appliedList,
+            vetoes: lastVetoList
+        )
     }
 }
 
@@ -405,6 +656,95 @@ extension OhmRuntime {
                                  hiddenDuration: .seconds(600), requiresFreezeConfirmation: true)
         guard background.response(to: .freeze(requiresConfirmation: false)) == .openCard(key) else {
             throw RuntimeError.failure("Arka plan dondurması onaysız açıldı.")
+        }
+
+        // Kural motoru ve DesiredState bağlam testi
+        let ruleBrowser = Rule(name: "Düşük Pil E-core", enabled: true, source: .manual,
+                               when: .batteryPercent(.below, value: 50, hysteresis: 3),
+                               targets: .apps([AppRef(bundleID: "com.example.browser", displayName: "Tarayıcı")]),
+                               actions: [.eCore(whileFrontmost: .release)])
+        let ruleAC = Rule(name: "Şarjda E-core", enabled: true, source: .manual,
+                          when: .powerSource(.ac),
+                          targets: .apps([AppRef(bundleID: "com.example.editor", displayName: "Editör")]),
+                          actions: [.eCore(whileFrontmost: .keep)])
+        let ruleRunaway = Rule(name: "Kaçak E-core", enabled: true, source: .manual,
+                               when: .always, targets: .runaway,
+                               actions: [.eCore(whileFrontmost: .release)])
+
+        let testEngine = RuleEngine(rules: [ruleBrowser, ruleAC, ruleRunaway])
+
+        // Durum 1: Pilde, %80 pil, kaçak yok -> hiçbir etki olmamalı
+        let ctx1 = RuleContext(powerSource: .battery, batteryPercent: 80, thermalLevel: .nominal,
+                               runawayApps: [], runningApps: [])
+        let eval1 = await testEngine.evaluate(ctx1)
+        guard eval1.desiredState.effects.isEmpty else {
+            throw RuntimeError.failure("Beklenmeyen kural etkisi üretildi.")
+        }
+
+        // Durum 2: Pilde, %40 pil, bundleID'li kaçak var -> browser ve runaway E-core almalı
+        let bundledKey = AppKey.bundle("com.example.hog")
+        let ctx2 = RuleContext(powerSource: .battery, batteryPercent: 40, thermalLevel: .nominal,
+                               runawayApps: [AppRef(bundleID: "com.example.hog", displayName: "Hog")],
+                               runningApps: [])
+        let eval2 = await testEngine.evaluate(ctx2)
+        guard eval2.desiredState.effects[AppKey.bundle("com.example.browser")]?.eCore != nil,
+              eval2.desiredState.effects[AppKey.bundle("com.example.editor")] == nil,
+              eval2.desiredState.effects[bundledKey]?.eCore != nil else {
+            throw RuntimeError.failure("Bağlam olayı beklenen DesiredState'e dönüşmedi.")
+        }
+
+        // Rev 1 kuralı: Paketsiz kaçak süreç hedef Note kontrolü
+        let unbundledKey = AppKey(kind: .executableName, value: "worker")
+        let unbundledRunaway = Runaway(app: unbundledKey, displayName: "worker", processes: [root],
+                                       averageCPU: 0.90, hiddenDuration: .seconds(300), requiresFreezeConfirmation: false)
+        let unbundledInfo = LiveDataSource.processInfo(unbundledRunaway)
+        guard unbundledInfo?.ruleNote == "kural bu süreci hedefleyemez" else {
+            throw RuntimeError.failure("Paketsiz kaçak süreç için kural notu eksik veya yanlış.")
+        }
+
+        // Kalıcılık: Yazma, okuma ve bozuk dosya yedeği testi
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("ohm-check-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let storeURL = tmpDir.appendingPathComponent("rules.json")
+        let storeA = RuleStore(fileURL: storeURL)
+        try await storeA.addRule(ruleBrowser)
+        try await storeA.addNeverFreeze("com.example.safari")
+
+        let storeB = RuleStore(fileURL: storeURL)
+        let loaded = await storeB.load()
+        guard loaded.rules.count == 1, loaded.rules.first?.id == ruleBrowser.id,
+              loaded.neverFreeze == ["com.example.safari"] else {
+            throw RuntimeError.failure("Kural veya asla-dondurma kalıcılığı okunamadı.")
+        }
+
+        // Bozuk dosya testi
+        try Data("BOZUK_JSON_ICERIGI".utf8).write(to: storeURL)
+        let storeC = RuleStore(fileURL: storeURL)
+        let corruptLoaded = await storeC.load()
+        guard corruptLoaded.rules.isEmpty, corruptLoaded.neverFreeze.isEmpty else {
+            throw RuntimeError.failure("Bozuk kural dosyası boş liste döndürmedi.")
+        }
+        guard await storeC.corruptWarning != nil else {
+            throw RuntimeError.failure("Bozuk kural dosyası uyarısı üretilmedi.")
+        }
+        let dirContents = try FileManager.default.contentsOfDirectory(atPath: tmpDir.path)
+        guard dirContents.contains(where: { $0.contains("corrupt-") }) else {
+            throw RuntimeError.failure("Bozuk dosya için yedek kopya oluşturulmadı.")
+        }
+
+        // NL .ready -> disabled kayıt testi (ADR 0003: kullanıcı arayüzden açar)
+        let nlRule = Rule(name: "NL Kuralı", enabled: true, source: .naturalLanguage(text: "TextEdit E-core"),
+                          when: .always, targets: .apps([AppRef(bundleID: "com.apple.TextEdit", displayName: "TextEdit")]),
+                          actions: [.eCore()])
+        let draft = RuleDraft.ready(nlRule)
+        if case .ready(var r) = draft {
+            r.enabled = false
+            try await storeA.addRule(r)
+        }
+        let nlSaved = await storeA.rules.first(where: { $0.name == "NL Kuralı" })
+        guard let nlSaved, !nlSaved.enabled else {
+            throw RuntimeError.failure("NL .ready kuralı devre dışı olarak kaydedilmedi.")
         }
     }
 }

@@ -1,12 +1,14 @@
 import AppKit
 import Observation
 import OhmModel
+import OhmRules
 import OSLog
 
 private enum LiveAction: Sendable {
     case toggle(Effect, AppKey)
     case response(Runaway, RunawayResponse)
     case neverFreeze([String])
+    case rules([Rule])
 }
 
 @MainActor
@@ -19,11 +21,13 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
     private(set) var todayReceipt = Receipt(interval: DateInterval(start: Date(), duration: 0))
     private(set) var runawayProcess: RunawayProcessInfo?
     private(set) var rules: [Rule] = []
-    let isNLAvailable = false
+    var isNLAvailable: Bool { NLRuleParser.checkAvailability() == .available }
     private(set) var neverFreezeApps: [String] = []
     private(set) var activeEffects: [AppKey: Effect] = [:]
+    private(set) var ruleVetoes: [UUID: String] = [:]
     private(set) var lastError: String?
 
+    @ObservationIgnored let ruleStore: RuleStore
     @ObservationIgnored private var runtime: OhmRuntime?
     @ObservationIgnored private var bridge: WorkspaceBridge?
     @ObservationIgnored private var notifier: RunawayNotifier?
@@ -34,6 +38,15 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
     @ObservationIgnored private var stopping = false
     @ObservationIgnored private var interactive = false
     @ObservationIgnored private var failureAlert: NSAlert?
+
+    init(ruleStore: RuleStore? = nil) {
+        if let ruleStore {
+            self.ruleStore = ruleStore
+        } else {
+            let url = RuleStore.defaultRulesURL() ?? FileManager.default.temporaryDirectory.appendingPathComponent("rules.json")
+            self.ruleStore = RuleStore(fileURL: url)
+        }
+    }
 
     func start() {
         guard startup == nil, !stopping else { return }
@@ -49,11 +62,19 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
         startup = Task(priority: .utility) { [weak self] in
             await notifier.install()
             do {
-                let runtime = try await OhmRuntime.make(source: self)
-                guard let self else { await runtime.shutdown(); return }
-                self.runtime = runtime
+                guard let self else { return }
+                let persisted = await self.ruleStore.load()
+                self.rules = persisted.rules
+                self.neverFreezeApps = persisted.neverFreeze
+                if let warning = await self.ruleStore.corruptWarning {
+                    self.showFailure(warning)
+                    await self.ruleStore.clearCorruptWarning()
+                }
+                let runtime = try await OhmRuntime.make(source: self, ruleStore: self.ruleStore)
                 guard !self.stopping else { await runtime.shutdown(); return }
+                self.runtime = runtime
                 await runtime.setNeverFreeze(self.neverFreezeApps)
+                await runtime.setRules(self.rules)
                 await runtime.start(workspace: bridge.events)
                 self.actionTask = Task { [weak self] in
                     for await action in actions {
@@ -62,6 +83,7 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
                         case .toggle(let effect, let key): await runtime.toggle(effect, for: key)
                         case .response(let runaway, let response): await runtime.respond(to: runaway, response: response)
                         case .neverFreeze(let names): await runtime.setNeverFreeze(names)
+                        case .rules(let newRules): await runtime.setRules(newRules)
                         }
                     }
                 }
@@ -115,14 +137,20 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
 
     nonisolated static func processInfo(_ runaway: Runaway?) -> RunawayProcessInfo? {
         guard let runaway, let root = runaway.processes.first else { return nil }
+        let ruleNote = runaway.app.kind != .bundleID ? "kural bu süreci hedefleyemez" : nil
         return RunawayProcessInfo(pid: root.pid, name: runaway.displayName,
                                   bundleID: runaway.app.kind == .bundleID ? runaway.app.value : nil,
                                   cpuPercent: runaway.averageCPU * 100,
                                   hiddenDurationMinutes: Int(runaway.hiddenDuration.components.seconds / 60),
-                                  appKey: runaway.app)
+                                  appKey: runaway.app,
+                                  ruleNote: ruleNote)
     }
 
     func updateEffects(_ effects: [AppKey: Effect]) { activeEffects = effects }
+
+    func updateRuleVetoes(_ vetoes: [UUID: String]) { ruleVetoes = vetoes }
+
+    func vetoReason(for rule: Rule) -> String? { ruleVetoes[rule.id] }
 
     func selectRunaway(_ runaway: Runaway) {
         currentRunaway = runaway
@@ -157,40 +185,42 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
         failureAlert = nil
     }
 
-    func showVetoes(_ reasons: [FreezeVeto]) {
-        let messages = reasons.map { reason -> String in
-            switch reason {
-            case .backgroundNeedsConfirmation: "Arka plan süreci için ek onay gerekli."
-            case .protectionNotReady: "Kurtarma izleyicisi hazır değil."
-            case .journalUnwritable: "Güvenlik günlüğü yazılamıyor."
-            case .bootUnverified: "Oturum kimliği doğrulanamıyor; dondurma ve E-core devre dışı."
-            case .recoveryPending: "Önceki oturumdan geri alınması bekleyen etkiler var."
-            case .frontmost: "Öndeki uygulama dondurulamaz."
-            case .notHidden: "Uygulamanın görünür pencereleri var."
-            case .userNeverList: "Uygulama asla dondurulmayacaklar listesinde."
-            case .notRunning: "Uygulama artık çalışmıyor."
-            case .notRegularApp: "Bu uygulama türü dondurmaya uygun değil."
-            case .otherUser: "Süreç başka bir kullanıcıya ait."
-            case .systemPath, .appleBundle: "Korunan sistem uygulamasına işlem uygulanamaz."
-            case .ohmItself: "Ohm kendi süreçlerine işlem uygulayamaz."
-            case .recentlyActive, .refreezeGrace: "Uygulama yakın zamanda kullanıldı; biraz bekleyin."
-            case .audio, .camera: "Uygulama ses veya kamera kullanıyor."
-            case .powerAssertion: "Uygulamanın sürdürmesi gereken bir sistem işi var."
-            case .eventTap: "Uygulama klavye veya fare girdilerini yönetiyor."
-            case .outOfBundleChild: "Uygulamanın paket dışında çalışan bağlı süreçleri var."
-            case .debugged: "Süreç bir hata ayıklayıcı tarafından izleniyor."
-            case .unsavedDocument: "Uygulamada kaydedilmemiş bir belge var."
-            case .safetyProbeFailed: "Sürecin güvenli olduğu doğrulanamadı."
-            case .powerOffInProgress: "Sistem kapanmaya hazırlanıyor."
-            case .postWakeQuiet: "Sistem yeni uyandı; koruma bekleme süresi sürüyor."
-            case .shuttingDown: "Ohm kapanıyor."
-            case .unstableTree: "Uygulamanın süreç ağacı değişmeye devam ediyor."
-            case .unsafeTopology, .unverifiedTopology: "Bu uygulamanın güvenli dondurulması doğrulanmadı."
-            case .superseded, .notDesired: "İstek artık geçerli değil."
-            case .busy: "Bu süreç için başka bir işlem sürüyor."
-            case .tableFull: "Kurtarma kapasitesi dolu; yeni işlem uygulanamaz."
-            }
+    nonisolated static func vetoMessage(_ reason: FreezeVeto) -> String {
+        switch reason {
+        case .backgroundNeedsConfirmation: "Arka plan süreci için ek onay gerekli."
+        case .protectionNotReady: "Kurtarma izleyicisi hazır değil."
+        case .journalUnwritable: "Güvenlik günlüğü yazılamıyor."
+        case .bootUnverified: "Oturum kimliği doğrulanamıyor; dondurma ve E-core devre dışı."
+        case .recoveryPending: "Önceki oturumdan geri alınması bekleyen etkiler var."
+        case .frontmost: "Öndeki uygulama dondurulamaz."
+        case .notHidden: "Uygulamanın görünür pencereleri var."
+        case .userNeverList: "Uygulama asla dondurulmayacaklar listesinde."
+        case .notRunning: "Uygulama artık çalışmıyor."
+        case .notRegularApp: "Bu uygulama türü dondurmaya uygun değil."
+        case .otherUser: "Süreç başka bir kullanıcıya ait."
+        case .systemPath, .appleBundle: "Korunan sistem uygulamasına işlem uygulanamaz."
+        case .ohmItself: "Ohm kendi süreçlerine işlem uygulayamaz."
+        case .recentlyActive, .refreezeGrace: "Uygulama yakın zamanda kullanıldı; biraz bekleyin."
+        case .audio, .camera: "Uygulama ses veya kamera kullanıyor."
+        case .powerAssertion: "Uygulamanın sürdürmesi gereken bir sistem işi var."
+        case .eventTap: "Uygulama klavye veya fare girdilerini yönetiyor."
+        case .outOfBundleChild: "Uygulamanın paket dışında çalışan bağlı süreçleri var."
+        case .debugged: "Süreç bir hata ayıklayıcı tarafından izleniyor."
+        case .unsavedDocument: "Uygulamada kaydedilmemiş bir belge var."
+        case .safetyProbeFailed: "Sürecin güvenli olduğu doğrulanamadı."
+        case .powerOffInProgress: "Sistem kapanmaya hazırlanıyor."
+        case .postWakeQuiet: "Sistem yeni uyandı; koruma bekleme süresi sürüyor."
+        case .shuttingDown: "Ohm kapanıyor."
+        case .unstableTree: "Uygulamanın süreç ağacı değişmeye devam ediyor."
+        case .unsafeTopology, .unverifiedTopology: "Bu uygulamanın güvenli dondurulması doğrulanmadı."
+        case .superseded, .notDesired: "İstek artık geçerli değil."
+        case .busy: "Bu süreç için başka bir işlem sürüyor."
+        case .tableFull: "Kurtarma kapasitesi dolu; yeni işlem uygulanamaz."
         }
+    }
+
+    func showVetoes(_ reasons: [FreezeVeto]) {
+        let messages = reasons.map(Self.vetoMessage)
         showFailure(messages.joined(separator: "\n"))
     }
 
@@ -205,20 +235,85 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
         continuation?.yield(.response(runaway, runaway.response(to: action)))
     }
 
-    // T-035 owns rule editing/evaluation. Never pretend a live rule was installed.
-    func addRule(description: String) { showFailure("Canlı kural yönetimi henüz kullanıma açık değil.") }
-    func toggleRule(_ rule: Rule) { showFailure("Canlı kural yönetimi henüz kullanıma açık değil.") }
-    func deleteRule(_ rule: Rule) { showFailure("Canlı kural yönetimi henüz kullanıma açık değil.") }
+    func addRule(description: String) {
+        guard isNLAvailable else {
+            showFailure("Canlı kural yönetimi henüz kullanıma açık değil.")
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self, !self.stopping else { return }
+            do {
+                let parser = NLRuleParser()
+                let draft = try await parser.parse(sentence: description)
+                switch draft {
+                case .ready(var rule):
+                    rule.enabled = false
+                    try await self.ruleStore.addRule(rule)
+                    self.rules = await self.ruleStore.rules
+                    self.continuation?.yield(.rules(self.rules))
+                case .needsClarification(_, let questions):
+                    let prompt = questions.map(\.question).joined(separator: "\n")
+                    self.showFailure(prompt.isEmpty ? "Kural netleştirme gerektiriyor." : prompt)
+                case .unsupported(let phrases):
+                    self.showFailure("Desteklenmeyen ifadeler: " + phrases.joined(separator: ", "))
+                }
+            } catch {
+                self.showFailure(error.localizedDescription)
+            }
+        }
+    }
+
+    func toggleRule(_ rule: Rule) {
+        Task { @MainActor [weak self] in
+            guard let self, !self.stopping else { return }
+            do {
+                try await self.ruleStore.toggleRule(id: rule.id)
+                self.rules = await self.ruleStore.rules
+                self.continuation?.yield(.rules(self.rules))
+            } catch {
+                self.showFailure(error.localizedDescription)
+            }
+        }
+    }
+
+    func deleteRule(_ rule: Rule) {
+        Task { @MainActor [weak self] in
+            guard let self, !self.stopping else { return }
+            do {
+                try await self.ruleStore.deleteRule(id: rule.id)
+                self.rules = await self.ruleStore.rules
+                self.continuation?.yield(.rules(self.rules))
+            } catch {
+                self.showFailure(error.localizedDescription)
+            }
+        }
+    }
 
     func addNeverFreezeApp(_ appName: String) {
         let name = appName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !neverFreezeApps.contains(name) else { return }
-        neverFreezeApps.append(name)
-        continuation?.yield(.neverFreeze(neverFreezeApps))
+        Task { @MainActor [weak self] in
+            guard let self, !self.stopping else { return }
+            do {
+                try await self.ruleStore.addNeverFreeze(name)
+                self.neverFreezeApps = await self.ruleStore.neverFreeze
+                self.continuation?.yield(.neverFreeze(self.neverFreezeApps))
+            } catch {
+                self.showFailure(error.localizedDescription)
+            }
+        }
     }
 
     func removeNeverFreezeApp(_ appName: String) {
-        neverFreezeApps.removeAll { $0 == appName }
-        continuation?.yield(.neverFreeze(neverFreezeApps))
+        Task { @MainActor [weak self] in
+            guard let self, !self.stopping else { return }
+            do {
+                try await self.ruleStore.removeNeverFreeze(appName)
+                self.neverFreezeApps = await self.ruleStore.neverFreeze
+                self.continuation?.yield(.neverFreeze(self.neverFreezeApps))
+            } catch {
+                self.showFailure(error.localizedDescription)
+            }
+        }
     }
 }

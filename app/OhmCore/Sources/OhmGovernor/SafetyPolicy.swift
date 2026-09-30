@@ -154,11 +154,17 @@ public final class SafetyPolicy {
     let probes: any SafetyProbing
     let config: GovernorConfig
     let health: FreezeHealthStore
+    public private(set) var userNeverFreeze: Set<String>
 
     init(probes: any SafetyProbing, config: GovernorConfig, health: FreezeHealthStore) {
         self.probes = probes
         self.config = config
         self.health = health
+        self.userNeverFreeze = config.userNeverFreeze
+    }
+
+    public func setUserNeverFreeze(_ bundleIDs: Set<String>) {
+        self.userNeverFreeze = bundleIDs
     }
 
     func topologyVetoes(_ app: RunningAppInfo, origin: EffectOrigin) -> [FreezeVeto] {
@@ -173,7 +179,8 @@ public final class SafetyPolicy {
     /// fails this static gate is never written into a rule. Verified topology is a Governor runtime
     /// veto until the rule registration UI is wired to that warning (ADR 0004, T-026b).
     public static func staticScopeVetoes(bundleID: String?, executablePath: String?,
-                                         config: GovernorConfig) -> [FreezeVeto] {
+                                         config: GovernorConfig,
+                                         userNeverFreeze: Set<String>? = nil) -> [FreezeVeto] {
         var v: [FreezeVeto] = []
         if let p = executablePath, config.protectedPathPrefixes.contains(where: { p.hasPrefix($0) }) {
             v.append(.systemPath)
@@ -181,7 +188,8 @@ public final class SafetyPolicy {
         if let b = bundleID {
             if b.hasPrefix("com.apple."), !config.appleAllowlist.contains(b) { v.append(.appleBundle) }
             if b.hasPrefix(config.ownBundlePrefix) { v.append(.ohmItself) }
-            if config.userNeverFreeze.contains(b) { v.append(.userNeverList) }
+            let never = userNeverFreeze ?? config.userNeverFreeze
+            if never.contains(b) { v.append(.userNeverList) }
         }
         return v
     }
@@ -189,7 +197,7 @@ public final class SafetyPolicy {
     /// Scope gate for one running process. `forRule` requires `.regular`; manual freezes of
     /// background processes are allowed only with the extra confirmation (§ 2).
     func scopeVetoes(_ app: RunningAppInfo, forRule: Bool, confirmedBackground: Bool) -> [FreezeVeto] {
-        var v = Self.staticScopeVetoes(bundleID: app.bundleID, executablePath: app.executablePath, config: config)
+        var v = Self.staticScopeVetoes(bundleID: app.bundleID, executablePath: app.executablePath, config: config, userNeverFreeze: userNeverFreeze)
         if app.uid != getuid() { v.append(.otherUser) }
         if config.ownPids.contains(app.pid) || app.pid == getpid() { v.append(.ohmItself) }
         if let exe = app.executablePath, let own = config.ownBundlePath, exe.hasPrefix(own + "/") {
