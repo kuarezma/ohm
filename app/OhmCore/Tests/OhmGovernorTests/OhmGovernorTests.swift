@@ -134,6 +134,7 @@ struct OhmGovernorTests {
         #expect(readLog(dir + "/ohm.log").contains("ECORE eCoreApplied"))
         #expect(!readLog(dir + "/ohm.log").contains("FREEZE"))
         let during = pShare(yes) ?? -1
+        #expect(darwinBG(yes) == 1)
         bag.kill9(ohm)
         usleep(1_000_000)
         let after = pShare(yes) ?? -1
@@ -158,6 +159,7 @@ struct OhmGovernorTests {
         #expect(log.contains("ECORE eCoreApplied"))
         #expect(isT(target))
         let during = pShare(yes, seconds: 0.5) ?? -1
+        #expect(darwinBG(yes) == 1)
         let t0 = nowNs()
         bag.kill9(ohm)
         let thawed = waitUntil(1) { !isT(target) }
@@ -654,6 +656,7 @@ struct OhmGovernorTests {
         #expect(await rig.gov.frozenRootPids.isEmpty)
         if case .eCoreApplied = await rig.gov.perform(.eCore(pid: y, on: true, origin: .manual)) {} else { Issue.record("E-core") }
         let share = pShare(y) ?? -1
+        #expect(darwinBG(y) == 1)
         #expect(share < 0.2)
         #expect(isFrozen(await rig.freeze(a)))
         let rep = await rig.gov.shutdown()

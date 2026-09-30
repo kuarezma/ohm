@@ -556,9 +556,12 @@ actor OhmRuntime {
                 bundle = "pid-\(root)"
             }
             for pid in members {
-                let prio = getpriority(PRIO_DARWIN_PROCESS, id_t(pid))
-                let bg = prio != 0 ? 1 : 0
-                appliedList.append("\(bundle)=eCore pid=\(pid) bg=\(bg)")
+                // getpriority(PRIO_DARWIN_PROCESS) reads 0 for other processes; report the task's base
+                // priority instead (4 under PRIO_DARWIN_BG, but App Nap can also lower GUI apps to 4).
+                var info = proc_taskinfo()
+                let size = Int32(MemoryLayout<proc_taskinfo>.size)
+                let pri = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, size) == size ? Int(info.pti_priority) : -1
+                appliedList.append("\(bundle)=eCore pid=\(pid) pri=\(pri)")
             }
         }
         appliedList.sort()
