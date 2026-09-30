@@ -42,7 +42,7 @@ struct OhmWidgetEntryView: View {
                     WidgetSmallView(data: data)
                 }
             } else {
-                WidgetEmptyView()
+                WidgetEmptyView(storageUnavailable: entry.storageUnavailable)
             }
         }
         .containerBackground(for: .widget) {

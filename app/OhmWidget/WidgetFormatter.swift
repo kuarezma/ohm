@@ -14,6 +14,10 @@ public enum WidgetFormatter {
             "tr": "Henüz veri yok — Ohm'u açın",
             "en": "No data yet — open Ohm"
         ],
+        "No widget data in this build": [
+            "tr": "Bu derlemede widget verisi yok",
+            "en": "No widget data in this build"
+        ],
         "Total": [
             "tr": "Toplam",
             "en": "Total"

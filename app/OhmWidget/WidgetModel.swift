@@ -48,10 +48,12 @@ public struct ReceiptWidgetData: Sendable, Equatable {
 public struct ReceiptEntry: TimelineEntry, Sendable {
     public let date: Date
     public let data: ReceiptWidgetData?
+    public let storageUnavailable: Bool
 
-    public init(date: Date, data: ReceiptWidgetData?) {
+    public init(date: Date, data: ReceiptWidgetData?, storageUnavailable: Bool = false) {
         self.date = date
         self.data = data
+        self.storageUnavailable = storageUnavailable
     }
 
     public static var placeholder: ReceiptEntry {

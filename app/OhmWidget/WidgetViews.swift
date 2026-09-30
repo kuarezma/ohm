@@ -152,7 +152,11 @@ public struct WidgetMediumView: View {
 public struct WidgetEmptyView: View {
     @Environment(\.locale) private var locale
 
-    public init() {}
+    public let storageUnavailable: Bool
+    public init(storageUnavailable: Bool = false) { self.storageUnavailable = storageUnavailable }
+    private var message: String {
+        storageUnavailable ? "No widget data in this build" : "No data yet — open Ohm"
+    }
 
     public var body: some View {
         VStack(spacing: 8) {
@@ -160,7 +164,7 @@ public struct WidgetEmptyView: View {
                 .font(.system(size: 24, weight: .light))
                 .foregroundStyle(.secondary.opacity(0.7))
 
-            Text(WidgetFormatter.localized("No data yet — open Ohm", locale: locale))
+            Text(WidgetFormatter.localized(message, locale: locale))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -169,6 +173,6 @@ public struct WidgetEmptyView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(10)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(WidgetFormatter.localized("No data yet — open Ohm", locale: locale))
+        .accessibilityLabel(WidgetFormatter.localized(message, locale: locale))
     }
 }

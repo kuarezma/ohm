@@ -94,6 +94,12 @@ public actor EnergyLedger: EnergyLedgerWriting {
 
     /// `appGroupIdentifier` is the signed, team-prefixed group (`<TEAM>.dev.ohm`); callers read it from
     /// their own entitlements (see OhmRuntime.appGroupIdentifier). Without it the ledger is process-local.
+    /// Pure path lookup: readers must not create storage directories.
+    public static func localDataDirectory() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Ohm/Data", isDirectory: true)
+    }
+
     public static func defaultDatabasePath(appGroupIdentifier: String? = nil) -> String {
         if let id = appGroupIdentifier,
            let appGroup = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: id) {

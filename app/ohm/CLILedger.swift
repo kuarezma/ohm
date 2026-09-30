@@ -2,6 +2,7 @@ import Foundation
 import OhmLedger
 import OhmModel
 import Security
+import SQLite3
 
 struct CLIError: LocalizedError {
     let message: String
@@ -17,17 +18,35 @@ enum CLILedger {
     }
 
     static func receipt(history: Bool) throws -> Receipt {
-        guard let group = appGroupIdentifier(),
-              let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else {
-            throw CLIError(message: "CLI App Group yetkisi okunamadı; Ohm paketindeki imzalı ohm aracını kullanın.")
+        let container = appGroupIdentifier().flatMap {
+            FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0)
         }
-        let now = Date()
+        return try receipt(history: history, container: container, local: EnergyLedger.localDataDirectory())
+    }
+
+    static func receipt(history: Bool, container: URL?, local: URL, now: Date = Date()) throws -> Receipt {
         let start = history ? now.addingTimeInterval(-7 * 86400) : Calendar.current.startOfDay(for: now)
         let interval = DateInterval(start: start, end: now)
-        let path = container.appendingPathComponent("ledger.sqlite").path
-        guard FileManager.default.fileExists(atPath: path) else { return Receipt(interval: interval) }
-        // Never fall back to EnergyLedger.defaultDatabasePath: that path can create a directory.
-        let reader = try LedgerReader(path: path)
-        return try reader.receipt(for: interval)
+        // Read only: neither path lookup nor a missing receipt creates a directory/database.
+        if let container {
+            let path = container.appendingPathComponent("ledger.sqlite").path
+            if FileManager.default.fileExists(atPath: path) {
+                do { return try LedgerReader(path: path).receipt(for: interval) }
+                catch {
+                    // Fall back only on access errors; a corrupt shared ledger must remain visible.
+                    if case LedgerError.sqliteError(let code, _) = error,
+                       code & 0xff == SQLITE_CANTOPEN || code & 0xff == SQLITE_PERM {
+                        // The shared container/WAL is inaccessible to this preview CLI.
+                    } else if FileManager.default.isReadableFile(atPath: path) {
+                        throw error
+                    }
+                }
+            }
+        }
+        let localPath = local.appendingPathComponent("ledger.sqlite").path
+        guard FileManager.default.fileExists(atPath: localPath) else {
+            throw CLIError(message: "Enerji fişi bulunamadı: App Group ve yerel depolamada veri yok. Ohm'u açıp ölçüm yapılmasını bekleyin.")
+        }
+        return try LedgerReader(path: localPath).receipt(for: interval)
     }
 }

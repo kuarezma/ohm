@@ -1,6 +1,23 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Local mode: widget and ohm receipt are unavailable in this build (unsigned preview)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local mode: widget and ohm receipt are unavailable in this build (unsigned preview)"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yerel mod: widget ve ohm receipt bu derlemede kullanılamaz (imzasız önizleme)"
+          }
+        }
+      }
+    },
     "High CPU usage while hidden": {
       "extractionState": "manual",
       "localizations": {

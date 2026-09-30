@@ -42,6 +42,12 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
+            if (store.dataSource as? LiveDataSource)?.isLocalStorage == true {
+                Text(String(localized: "Local mode: widget and ohm receipt are unavailable in this build (unsigned preview)"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section(header: Text(String(localized: "Sampling interval"))) {
                 LabeledContent(String(localized: "Active (popover open)")) {
                     Text(OhmFormatters.localizedString("1 s", locale: locale))
