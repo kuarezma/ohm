@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 @testable import OhmGovernor
-import OhmJournal
+@testable import OhmJournal
 import OhmModel
 import Synchronization
 import Testing
@@ -61,10 +61,11 @@ private struct T026Rig {
     let signals = T026SignalState()
     let treeState = TreeState()
     let gov: Governor
-    init(boot: String? = "t026-boot") {
+    init(boot: String? = "t026-boot", healthCheckDelay: Double = 5) {
         var config = testConfig(tempDir("t026"))
         config.minHiddenFloor = 0
         config.refreezeGrace = 0
+        config.healthCheckDelay = healthCheckDelay
         gov = Governor(config: config, journal: T026Journal(boot: boot), appControl: FakeAppControl(apps),
                        protection: FakeProtection(FakeProtectionState()), signaler: T026Signaler(signals),
                        tree: FakeTree(treeState), probes: FakeProbes(ProbeState()))
@@ -78,6 +79,284 @@ private struct T026Rig {
 
 @Suite("T-026 Governor regressions", .serialized)
 struct T026RegressionTests {
+    @Test("T026b P2-1: Governor thaw-all closes retained prior-session tracking and counts it")
+    func userClosesPriorSession() async throws {
+        let paths = JournalPaths(directory: tempDir("t026b-user"))
+        let group = UUID()
+        try JournalRecord(op: .freeze, group: group, pids: [JournalPid(pid: 990_101, start: 1)])
+            .encodedLine().write(to: URL(fileURLWithPath: paths.journal))
+        let journal = try JournalSession.open(paths: paths, ownerLockRetry: 0, signaler: T026bBootSignaler()).0
+        let gov = Governor(config: testConfig(paths.directory), journal: journal,
+                           appControl: FakeAppControl(FakeAppState()), protection: FakeProtection(FakeProtectionState()),
+                           signaler: T026Signaler(T026SignalState()), tree: FakeTree(TreeState()), probes: FakeProbes(ProbeState()))
+        #expect(await gov.disabledReason == .recoveryPending)
+        #expect(await gov.perform(.thawAll) == .thawed(groups: 1))
+        #expect(await gov.disabledReason == nil)
+        let snapshot = JournalReader.read(path: paths.journal)
+        #expect(snapshot.openGroups().isEmpty)
+        #expect(snapshot.records.contains { $0.group == group && $0.reason == "userForcedUnverified" })
+        _ = await gov.shutdown()
+    }
+
+    @Test("T026b P2-1: existing watcher lock is reused without another spawned child")
+    func reuseWatcher() throws {
+        let paths = JournalPaths(directory: tempDir("t026b-reuse"))
+        let incumbent = try FileLock(path: paths.thawdLock)
+        try #require(incumbent.tryLockExclusive())
+        let protection = WatcherProtection(paths: paths, executable: "/missing/ohm-thawd", useLaunchAgent: false)
+        #expect(protection.activate() == .spawnedWatcher)
+        #expect(protection.spawnedPid == nil && protection.isReady())
+        incumbent.unlock()
+        #expect(!protection.isReady())
+    }
+
+    @Test("T026b P2-2: E-core authoritative exit bypasses unknown probes")
+    func authoritativeECoreExit() throws {
+        let state = T026SignalState()
+        let root = ProcessIdentity(pid: 990_091, startAbsTime: 1)
+        let helper = ProcessIdentity(pid: 990_092, startAbsTime: 2)
+        state.values.withLock { $0.identities = [root.pid: 1, helper.pid: 2] }
+        let app = RunningAppInfo(identity: root, bundleID: "test", bundlePath: nil, executablePath: nil,
+                                 activationPolicy: .regular, uid: getuid())
+        let lane = ECoreLane(signaler: T026Signaler(state))
+        _ = try lane.apply(app: app, key: nil, origin: .manual, params: ECoreParams(whileFrontmost: .release), helpers: [helper],
+                           journal: T026Journal(boot: "A"))
+        state.values.withLock { $0.unknown = [helper.pid] }
+        lane.dropMember(helper.pid, authoritative: true, identity: helper)
+        #expect(lane.group(root: root.pid)?.pids == [root])
+        #expect(state.values.withLock { $0.background.filter { !$0.1 }.isEmpty })
+    }
+
+    @Test("T026b P2-4: bundleless runaway requires and accepts the extra background confirmation")
+    func runawayBackgroundConfirmation() async throws {
+        let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
+        let pid = bag.spawn("/bin/sleep", ["120"])
+        let rig = T026Rig()
+        let identity = try #require(ProcessProbe.identity(of: pid))
+        rig.apps.add(RunningAppInfo(identity: identity, bundleID: nil, bundlePath: nil,
+                                   executablePath: "/tmp/node", activationPolicy: .prohibited, uid: getuid()))
+        rig.signals.values.withLock { $0.identities[pid] = identity.startAbsTime }
+        defer { ThawTable.remove(pid) }
+        let rejected = await rig.gov.perform(.freeze(pid: pid, origin: .runaway, confirmedBackground: false))
+        #expect(vetoes(rejected) == [.backgroundNeedsConfirmation])
+        #expect(isFrozen(await rig.gov.perform(.freeze(pid: pid, origin: .runaway, confirmedBackground: true))))
+        #expect(await rig.gov.frozenMembers(root: pid) == [pid])
+        _ = await rig.gov.shutdown()
+    }
+
+    @Test("T026b P2-5: failed recovery is bounded even across repeated ticks")
+    func tickRecoveryThrottle() async {
+        let state = T026bRecoveryState()
+        state.succeeds.withLock { $0 = false }
+        let gov = Governor(config: testConfig(tempDir("t026b-throttle")), journal: T026bJournal(state),
+                           appControl: FakeAppControl(FakeAppState()), protection: FakeProtection(FakeProtectionState()),
+                           signaler: T026Signaler(T026SignalState()), tree: FakeTree(TreeState()), probes: FakeProbes(ProbeState()))
+        for _ in 0..<20 { await gov.tick() }
+        #expect(state.attempts.withLock { $0 } == 1)
+        #expect(await gov.disabledReason == .bootUnverified)
+        _ = await gov.shutdown()
+    }
+
+    @Test("T026b P3: unknown identity on wake or thaw never marks freezeUnsafe", arguments: [false, true])
+    func unknownHealth(wake: Bool) async throws {
+        let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
+        let pid = bag.spawn("/bin/sleep", ["120"])
+        let rig = T026Rig(healthCheckDelay: 0.01)
+        let id = ProcessIdentity(pid: pid, startAbsTime: 123)
+        rig.apps.add(RunningAppInfo(identity: id, bundleID: "health", bundlePath: nil, executablePath: nil,
+                                   activationPolicy: .regular, uid: getuid()))
+        rig.signals.values.withLock { $0.identities[pid] = id.startAbsTime }
+        defer { ThawTable.remove(pid) }
+        #expect(isFrozen(await rig.gov.perform(.freeze(pid: pid, origin: .manual, confirmedBackground: false))))
+        rig.signals.values.withLock { $0.unknown = [pid] }
+        if wake { await rig.gov.handle(.didWake) } else { _ = await rig.gov.perform(.thaw(pid: pid)) }
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(!(await rig.gov.isFreezeUnsafe("health")))
+        #expect(await rig.gov.pendingUndoPids == [pid])
+        rig.signals.values.withLock { $0.unknown = [] }
+        _ = await rig.gov.thawAll(reason: .user)
+        _ = await rig.gov.shutdown()
+    }
+
+    @Test("T026b P2-2: NOTE_EXIT drops a helper despite unknown or matching probes", arguments: [false, true])
+    func authoritativeExit(unknown: Bool) async throws {
+        let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
+        let root = bag.spawn("/bin/sleep", ["120"]), helper = bag.spawn("/bin/sleep", ["120"])
+        let helperID = try #require(ProcessProbe.identity(of: helper))
+        let rig = T026Rig(); rig.add(root, bundlePath: "/tmp/T026.app")
+        rig.signals.values.withLock {
+            $0.identities[helper] = helperID.startAbsTime
+        }
+        rig.treeState.provider.withLock { $0 = { _ in [helperID] } }
+        defer { ThawTable.remove(root); ThawTable.remove(helper) }
+        #expect(isFrozen(await rig.gov.perform(.freeze(pid: root, origin: .manual, confirmedBackground: false))))
+        if unknown { rig.signals.values.withLock { _ = $0.unknown.insert(helper) } }
+        bag.kill9(helper)
+        for _ in 0..<100 {
+            if await rig.gov.frozenMembers(root: root) == [root] { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await rig.gov.frozenMembers(root: root) == [root])
+        #expect(!ThawTable.contains(helper))
+        _ = await rig.gov.shutdown()
+    }
+
+    @Test("T026b Rev1: NOTE_EXIT after thaw marks unsafe despite unknown or matching probes", arguments: [false, true], [false, true])
+    func healthExitAfterThaw(unknown: Bool, rootExits: Bool) async throws {
+        let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
+        let root = bag.spawn("/bin/sleep", ["120"]), helper = bag.spawn("/bin/sleep", ["120"])
+        let helperID = try #require(ProcessProbe.identity(of: helper))
+        let rig = T026Rig(healthCheckDelay: 0.2)
+        rig.add(root, bundle: "com.apple.TextEdit", bundlePath: "/tmp/T026.app")
+        rig.signals.values.withLock { $0.identities[helper] = helperID.startAbsTime }
+        rig.treeState.provider.withLock { $0 = { _ in [helperID] } }
+        defer { ThawTable.remove(root); ThawTable.remove(helper) }
+        #expect(isFrozen(await rig.gov.perform(.freeze(pid: root, origin: .manual, confirmedBackground: false))))
+        #expect(await rig.gov.perform(.thaw(pid: root)) == .thawed(groups: 1))
+        let exited = rootExits ? root : helper
+        if unknown { rig.signals.values.withLock { _ = $0.unknown.insert(exited) } }
+        bag.kill9(exited)
+        for _ in 0..<100 {
+            if await rig.gov.isFreezeUnsafe("com.apple.TextEdit") { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await rig.gov.isFreezeUnsafe("com.apple.TextEdit"))
+        if rootExits {
+            rig.apps.m.withLock { $0[root] = nil }
+            let relaunched = bag.spawn("/bin/sleep", ["120"])
+            rig.add(relaunched, bundle: "com.apple.TextEdit", bundlePath: "/tmp/T026.app")
+        }
+        let key = AppKey.bundle("com.apple.TextEdit")
+        let report = await rig.gov.reconcile(DesiredState(effects: [key: DesiredEffect(
+            freeze: FreezeParams(minHiddenSeconds: 0), origins: [.freeze: [.rule(UUID())]])]))
+        #expect(vetoes(report.outcomes[key] ?? .notFound).contains(.unsafeTopology))
+        _ = await rig.gov.shutdown()
+    }
+
+    @Test("T026b Rev1: probe-error thaw still uses definitive helper exit for health")
+    func healthExitAfterProbeErrorThaw() async throws {
+        let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
+        let root = bag.spawn("/bin/sleep", ["120"]), helper = bag.spawn("/bin/sleep", ["120"])
+        let helperID = try #require(ProcessProbe.identity(of: helper))
+        let rig = T026Rig(healthCheckDelay: 0.2)
+        rig.add(root, bundlePath: "/tmp/T026.app")
+        rig.signals.values.withLock { $0.identities[helper] = helperID.startAbsTime }
+        rig.treeState.provider.withLock { $0 = { _ in [helperID] } }
+        defer { ThawTable.remove(root); ThawTable.remove(helper) }
+        #expect(isFrozen(await rig.gov.perform(.freeze(pid: root, origin: .manual, confirmedBackground: false))))
+        rig.signals.values.withLock { _ = $0.unknown.insert(helper) }
+        await rig.gov.handle(.didWake)
+        #expect(await rig.gov.frozenRootPids.isEmpty)
+        #expect(await rig.gov.pendingUndoPids == [helper])
+        #expect(!(await rig.gov.isFreezeUnsafe("dev.ohmtest.t026")))
+        bag.kill9(helper)
+        for _ in 0..<100 {
+            if await rig.gov.isFreezeUnsafe("dev.ohmtest.t026") { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await rig.gov.isFreezeUnsafe("dev.ohmtest.t026"))
+        #expect(await rig.gov.pendingUndoPids.isEmpty)
+        _ = await rig.gov.shutdown()
+    }
+
+    @Test("T026b Rev1: expired health check keeps the exit source of a newer freeze")
+    func healthWindowRefreeze() async throws {
+        let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
+        let root = bag.spawn("/bin/sleep", ["120"]), helper = bag.spawn("/bin/sleep", ["120"])
+        let helperID = try #require(ProcessProbe.identity(of: helper))
+        let rig = T026Rig(healthCheckDelay: 0.05)
+        rig.add(root, bundlePath: "/tmp/T026.app")
+        rig.signals.values.withLock { $0.identities[helper] = helperID.startAbsTime }
+        rig.treeState.provider.withLock { $0 = { _ in [helperID] } }
+        defer { ThawTable.remove(root); ThawTable.remove(helper) }
+        #expect(isFrozen(await rig.gov.perform(.freeze(pid: root, origin: .manual, confirmedBackground: false))))
+        _ = await rig.gov.perform(.thaw(pid: root))
+        #expect(isFrozen(await rig.gov.perform(.freeze(pid: root, origin: .manual, confirmedBackground: false))))
+        try await Task.sleep(for: .milliseconds(150))
+        rig.signals.values.withLock { _ = $0.unknown.insert(helper) }
+        bag.kill9(helper)
+        for _ in 0..<100 {
+            if await rig.gov.frozenMembers(root: root) == [root] { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await rig.gov.frozenMembers(root: root) == [root])
+        #expect(!(await rig.gov.isFreezeUnsafe("dev.ohmtest.t026")))
+        _ = await rig.gov.shutdown()
+    }
+
+    @Test("T026b Rev1: health observation ends on timeout or shutdown", arguments: [false, true])
+    func healthWindowEnds(shutdown: Bool) async throws {
+        let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
+        let pid = bag.spawn("/bin/sleep", ["120"])
+        let rig = T026Rig(healthCheckDelay: shutdown ? 0.3 : 0.05)
+        rig.add(pid)
+        defer { ThawTable.remove(pid) }
+        #expect(isFrozen(await rig.gov.perform(.freeze(pid: pid, origin: .manual, confirmedBackground: false))))
+        _ = await rig.gov.perform(.thaw(pid: pid))
+        if shutdown { _ = await rig.gov.shutdown() }
+        else { try await Task.sleep(for: .milliseconds(150)) }
+        rig.signals.values.withLock { _ = $0.unknown.insert(pid) }
+        bag.kill9(pid)
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(!(await rig.gov.isFreezeUnsafe("dev.ohmtest.t026")))
+        _ = await rig.gov.shutdown()
+    }
+
+    @Test("T026b Rev1: unready owned watcher is reaped even when startup identity is unreadable")
+    func unreadableWatcherCleanup() throws {
+        let paths = JournalPaths(directory: tempDir("t026b-unreadable-watcher"))
+        let protection = WatcherProtection(paths: paths, executable: "/bin/sleep", arguments: ["30"],
+                                           useLaunchAgent: false)
+        protection.identityProbe = { _ in nil }
+        #expect(protection.activate() == .spawnedWatcher)
+        let pid = try #require(protection.spawnedPid)
+        defer {
+            // Reap only our still-owned child; never signal a pid already released for reuse.
+            if waitpid(pid, nil, WNOHANG) == 0 { safeKill(pid, SIGKILL); _ = waitpid(pid, nil, 0) }
+        }
+        #expect(!protection.isReady())
+        protection.abandon()
+        #expect(protection.mode == .none && protection.spawnedPid == nil)
+        let result = waitpid(pid, nil, WNOHANG)
+        #expect(result == -1 && errno == ECHILD, "abandon must kill and reap its unready child")
+    }
+
+    @Test("T026b P2-3: manual E-core release survives a rule keep policy")
+    func manualECoreRelease() async throws {
+        let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
+        let pid = bag.spawn("/bin/sleep", ["120"])
+        let rig = T026Rig(); rig.add(pid)
+        _ = await rig.gov.perform(.eCore(pid: pid, on: true, origin: .manual))
+        let key = AppKey.bundle("dev.ohmtest.t026")
+        _ = await rig.gov.reconcile(DesiredState(effects: [key: DesiredEffect(eCore: ECoreParams(whileFrontmost: .keep),
+                                                                           origins: [.eCore: [.rule(UUID())]])]))
+        _ = await rig.gov.reconcile(DesiredState())
+        await rig.gov.handle(.activated(pid: pid))
+        #expect(await rig.gov.eCoreRootPids.isEmpty)
+        _ = await rig.gov.shutdown()
+    }
+
+    @Test("T026b P2-4: runaway card is user-confirmed; only rules are automatic")
+    func runawayIsManual() {
+        #expect(!EffectOrigin.runaway.isAutomatic)
+        #expect(EffectOrigin.rule(UUID()).isAutomatic)
+    }
+
+    @Test("T026b P2-5: tick retries recovery and re-enables effects")
+    func tickRecovery() async {
+        let state = T026bRecoveryState()
+        let gov = Governor(config: testConfig(tempDir("t026b-retry")), journal: T026bJournal(state),
+                           appControl: FakeAppControl(FakeAppState()), protection: FakeProtection(FakeProtectionState()),
+                           signaler: T026Signaler(T026SignalState()), tree: FakeTree(TreeState()), probes: FakeProbes(ProbeState()))
+        #expect(await gov.disabledReason != nil)
+        await gov.tick()
+        #expect(state.attempts.withLock { $0 } == 1)
+        #expect(await gov.disabledReason == nil)
+        await gov.tick()
+        #expect(state.attempts.withLock { $0 } == 1)
+        _ = await gov.shutdown()
+    }
+
     @Test("P1: unknown member during verification stays in the table and pending undo", arguments: [false, true])
     func verifyUnknownHelper(unknownRoot: Bool) throws {
         let state = T026SignalState()
@@ -142,8 +421,8 @@ struct T026RegressionTests {
         let rig = T026Rig(boot: nil); rig.add(pid)
         defer { ThawTable.remove(pid) }
         #expect(vetoes(await rig.gov.perform(.freeze(pid: pid, origin: .manual, confirmedBackground: false)))
-            .contains(.journalUnwritable))
-        #expect(vetoes(await rig.gov.perform(.eCore(pid: pid, on: true, origin: .manual))).contains(.journalUnwritable))
+            .contains(.bootUnverified))
+        #expect(vetoes(await rig.gov.perform(.eCore(pid: pid, on: true, origin: .manual))).contains(.bootUnverified))
         #expect(rig.signals.values.withLock { $0.signals.isEmpty && $0.background.isEmpty })
         _ = await rig.gov.shutdown()
     }
@@ -170,7 +449,7 @@ struct T026RegressionTests {
         _ = await rig.gov.shutdown()
     }
 
-    @Test("Decision: rule and runaway require verified topology; manual, CLI and E-core remain available")
+    @Test("Decision: rules require verified topology; user-confirmed runaway, manual and CLI remain available")
     func automaticTopology() async throws {
         let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
         let pid = bag.spawn("/bin/sleep", ["120"])
@@ -182,8 +461,7 @@ struct T026RegressionTests {
         let report = await rig.gov.reconcile(desired)
         #expect(vetoes(report.outcomes[key] ?? .notFound).contains { $0.rawValue == "unverifiedTopology" })
         _ = await rig.gov.thawAll(reason: .user)
-        #expect(vetoes(await rig.gov.perform(.freeze(pid: pid, origin: .runaway, confirmedBackground: false)))
-            .contains { $0.rawValue == "unverifiedTopology" })
+        #expect(isFrozen(await rig.gov.perform(.freeze(pid: pid, origin: .runaway, confirmedBackground: false))))
         _ = await rig.gov.thawAll(reason: .user)
         for origin in [EffectOrigin.manual, .cli] {
             #expect(isFrozen(await rig.gov.perform(.freeze(pid: pid, origin: origin, confirmedBackground: false))))
@@ -256,7 +534,7 @@ struct T026RegressionTests {
         _ = await rig.gov.shutdown()
     }
 
-    @Test("P1: real spawned watcher stays alive for unknown boot, exits after the open effect is closed")
+    @Test("T026b P2-1: spawned watcher exits for absent recorded boot; shared user path closes it")
     func spawnedWatcherKeepsLock() throws {
         let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty) }
         let paths = JournalPaths(directory: tempDir("t026-spawned"))
@@ -269,22 +547,49 @@ struct T026RegressionTests {
         try #require(waitUntil(2) { FileLock.isHeldByAnother(path: paths.thawdLock) })
         let identity = try #require(ProcessProbe.identity(of: watcher))
         owner.release()
-        try #require(waitUntil(1) { readLog(paths.directory + "/watcher.log").contains("unverifiedBoot=[990061]") })
-        #expect(ProcessProbe.isLive(identity))
-        #expect(FileLock.isHeldByAnother(path: paths.thawdLock))
+        try #require(waitUntil(1) { readLog(paths.directory + "/watcher.log").contains("missingRecordedBoot=[990061]") })
+        #expect(waitUntil(1) { !ProcessProbe.isLive(identity) })
+        #expect(!FileLock.isHeldByAnother(path: paths.thawdLock))
         #expect(JournalReader.read(path: paths.journal).openGroups().map(\.group) == [group])
-        // Simulate an explicit user resolution while holding the same writer lock as the CLI.
-        let resolution = try OwnerLock.acquire(paths: paths, retryFor: 1)
-        let close = JournalRecord(op: .thaw, group: group, reason: "user")
-        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: paths.journal))
-        try handle.seekToEnd()
-        try handle.write(contentsOf: close.encodedLine())
-        try handle.synchronize()
-        try handle.close()
-        resolution.release()
+        let report = try JournalSession.thawAll(paths: paths)
+        #expect(report.forcedClosedGroups == [group])
+        #expect(JournalReader.read(path: paths.journal).openGroups().isEmpty)
+        #expect(JournalReader.read(path: paths.journal).records.contains { $0.group == group && $0.reason == "userForcedUnverified" })
         #expect(waitUntil(1) {
             !ProcessProbe.isLive(identity) && !FileLock.isHeldByAnother(path: paths.thawdLock)
         })
         #expect(!FileLock.isHeldByAnother(path: paths.thawdLock))
+    }
+}
+
+private final class T026bRecoveryState: Sendable {
+    let attempts = Mutex(0)
+    let succeeds = Mutex(true)
+}
+
+private struct T026bBootSignaler: RecoverySignaling {
+    func bootSessionUUID() -> String? { "test" }
+    func identityStatus(_ id: ProcessIdentity) -> ProcessProbe.IdentityStatus { .unknown(EPERM) }
+    func sendCont(_ pid: Int32) -> Int32 { EPERM }
+    func clearBackground(_ pid: Int32) -> Int32 { EPERM }
+}
+
+private final class T026bJournal: FreezeJournaling {
+    var boot: String?
+    var recoveryReport: RecoveryReport? = {
+        var report = RecoveryReport()
+        report.unverifiedBoot = [JournalPid(pid: 990_072, start: 2)]
+        return report
+    }()
+    let state: T026bRecoveryState
+    init(_ state: T026bRecoveryState) { self.state = state }
+    func append(_ record: JournalRecord, sync: Bool) throws {}
+    func compactIfIdle() throws {}
+    func retryRecovery(forceCloseUnverifiable: Bool) throws -> RecoveryReport? {
+        state.attempts.withLock { $0 += 1 }
+        if !state.succeeds.withLock({ $0 }) { return recoveryReport }
+        boot = "verified"
+        recoveryReport = RecoveryReport()
+        return recoveryReport
     }
 }

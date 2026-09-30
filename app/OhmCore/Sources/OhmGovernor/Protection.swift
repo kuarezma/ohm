@@ -29,6 +29,8 @@ public final class WatcherProtection: ProtectionProviding {
     public private(set) var mode: ProtectionMode = .none
     public private(set) var spawnedPid: Int32?
     private var spawnedIdentity: ProcessIdentity?
+    // Injectable kernel identity read for deterministic startup-failure coverage.
+    var identityProbe: (Int32) -> ProcessIdentity? = ProcessProbe.identity(of:)
 
     /// - Parameters:
     ///   - executable: `Ohm.app/Contents/MacOS/ohm-thawd`.
@@ -48,6 +50,12 @@ public final class WatcherProtection: ProtectionProviding {
             mode = .launchAgent
             return mode
         }
+        if FileLock.isHeldByAnother(path: paths.thawdLock) {
+            // A protector from the previous Ohm session still waits on owner.lock. Reuse its
+            // liveness lock instead of spawning another child blocked on thawd.lock.
+            mode = .spawnedWatcher
+            return mode
+        }
         mode = spawn() ? .spawnedWatcher : .none
         return mode
     }
@@ -60,6 +68,7 @@ public final class WatcherProtection: ProtectionProviding {
             return SMAppService.agent(plistName: plistName).status == .enabled
                 && FileLock.isHeldByAnother(path: paths.thawdLock)
         case .spawnedWatcher:
+            if spawnedPid == nil { return FileLock.isHeldByAnother(path: paths.thawdLock) }
             guard let id = spawnedIdentity, ProcessProbe.matches(id),
                   let info = ProcessProbe.bsdInfo(id.pid), info.pbi_status != UInt32(SZOMB) else { return false }
             return FileLock.isHeldByAnother(path: paths.thawdLock)
@@ -71,6 +80,7 @@ public final class WatcherProtection: ProtectionProviding {
         spawnedPid = nil
         spawnedIdentity = nil
         guard mode == .spawnedWatcher else { return mode }
+        if FileLock.isHeldByAnother(path: paths.thawdLock) { return mode }
         mode = spawn() ? .spawnedWatcher : .none
         return mode
     }
@@ -101,15 +111,23 @@ public final class WatcherProtection: ProtectionProviding {
         var pid: pid_t = 0
         guard posix_spawn(&pid, executable, &actions, &attr, argv, environ) == 0 else { return false }
         spawnedPid = pid
-        spawnedIdentity = ProcessProbe.identity(of: pid)
+        spawnedIdentity = identityProbe(pid)
         return true
     }
 
+    /// A direct, unreaped child cannot have its pid reused. waitpid establishes ownership even
+    /// when the startup identity probe failed; ECHILD must never lead to a signal.
+    private func stopOwnedChild(signal: Int32) {
+        guard let pid = spawnedPid else { return }
+        var result: pid_t
+        repeat { result = waitpid(pid, nil, WNOHANG) } while result == -1 && errno == EINTR
+        guard result == 0 else { return }
+        _ = kill(pid, signal)
+        repeat { result = waitpid(pid, nil, 0) } while result == -1 && errno == EINTR
+    }
+
     public func abandon() {
-        if let id = spawnedIdentity, ProcessProbe.matches(id) {
-            kill(id.pid, SIGKILL)
-            _ = waitpid(id.pid, nil, 0)
-        }
+        stopOwnedChild(signal: SIGKILL)
         spawnedPid = nil
         spawnedIdentity = nil
         mode = .none
@@ -117,10 +135,7 @@ public final class WatcherProtection: ProtectionProviding {
 
     /// Only when the journal is empty and both features are off (§ 6 "Kayıt ömrü").
     public func stopSpawnedWatcher() {
-        if let id = spawnedIdentity, ProcessProbe.matches(id) {
-            kill(id.pid, SIGTERM)
-            _ = waitpid(id.pid, nil, 0)
-        }
+        stopOwnedChild(signal: SIGTERM)
         spawnedPid = nil
         spawnedIdentity = nil
         mode = .none

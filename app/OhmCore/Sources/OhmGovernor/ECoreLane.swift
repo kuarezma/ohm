@@ -25,6 +25,7 @@ final class ECoreLane {
 
     /// Refresh the merged request even when no helper has started since the previous reconcile.
     func updateParams(root: Int32, params: ECoreParams) {
+        guard groups[root]?.origin.isRule == true else { return }
         groups[root]?.params = params
     }
 
@@ -83,12 +84,15 @@ final class ECoreLane {
         return unresolved
     }
 
-    func dropMember(_ pid: Int32) {
+    func dropMember(_ pid: Int32, authoritative: Bool = false, identity: ProcessIdentity? = nil) {
         for (root, var g) in groups where g.pids.contains(where: { $0.pid == pid }) {
             guard let member = g.pids.first(where: { $0.pid == pid }) else { continue }
-            switch signaler.identityStatus(member) {
-            case .gone, .mismatch: break
-            case .unknown, .match: continue
+            if let identity, member != identity { continue }
+            if !authoritative {
+                switch signaler.identityStatus(member) {
+                case .gone, .mismatch: break
+                case .unknown, .match: continue
+                }
             }
             g.pids.removeAll { $0.pid == pid }
             groups[root] = g

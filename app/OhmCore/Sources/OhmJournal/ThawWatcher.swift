@@ -43,8 +43,13 @@ public enum ThawWatcher {
             log("cannot open thawd.lock: \(error)")
             exit(1)
         }
-        // Another watcher already holds it: wait and take over when it dies (0 CPU while blocked).
-        guard thawdLock.lockExclusiveBlocking() else {
+        // One spawned protector is sufficient. Do not accumulate blocked children on every launch.
+        if mode == .spawned, !thawdLock.tryLockExclusive() {
+            log("another watcher is already protecting the journal")
+            exit(0)
+        }
+        // LaunchAgent waits and takes over when an existing watcher dies.
+        guard mode == .spawned || thawdLock.lockExclusiveBlocking() else {
             log("cannot lock thawd.lock errno=\(errno)")
             exit(1)
         }
@@ -63,42 +68,66 @@ public enum ThawWatcher {
         }
     }
 
-    /// The spawned watcher keeps its liveness lock until recovery verifies every effect is undone.
+    /// Bounded recovery lifetime: missing provenance cannot improve, persistent faults get 16
+    /// attempts. Records remain durable for the next owner or explicit user resolution.
     static func spawnedLoop(paths: JournalPaths, recover: (() -> RecoveryReport?)? = nil,
-                            pause: (Double) -> Void = { usleep(useconds_t($0 * 1e6)) },
+                            pause: ((Double) -> Void)? = nil,
+                            emitLog: (String) -> Void = log,
                             shouldStop: () -> Bool = { false }) {
         var failures = 0
+        var previousSummary: String?
         while !shouldStop() {
             let report: RecoveryReport?
             if let recover { report = recover() } else { report = recoverOnce(paths: paths) }
+            logChanged(report, previous: &previousSummary, emitLog: emitLog)
             if let report, !report.needsRetry, !hasOpenGroups(paths) { return }
-            failures = min(failures + 1, 7)
-            pause(retryDelay(failures))
+            if let report, !report.needsRetry, !report.missingRecordedBoot.isEmpty,
+               JournalReader.read(path: paths.journal).openGroups().allSatisfy({ $0.boot == nil }) {
+                emitLog("recorded boot is missing; explicit user resolution required")
+                return
+            }
+            failures += 1
+            if failures >= 16 {
+                emitLog("recovery retry budget exhausted; records retained for next launch or user resolution")
+                return
+            }
+            let delay = retryDelay(failures)
+            if let pause { pause(delay) } else { waitForChange(paths: paths, timeoutSeconds: delay) }
         }
     }
 
-    private static func retryDelay(_ failures: Int) -> Double {
-        min(5.0, 0.1 * pow(2, Double(failures - 1)))
+    static func retryDelay(_ failures: Int) -> Double {
+        min(300.0, 0.1 * pow(2, Double(min(failures - 1, 12))))
     }
 
     /// LaunchAgent loop. After every recovery the journal is checked again *after* the watch is
     /// armed (a new Ohm may have written and died in between, T-024 #3). If recovery could not
-    /// finish (unresolved members, failed rewrite) it is retried with a bounded backoff (≤ 5 s)
+    /// finish (unresolved members, failed rewrite) it is retried with a bounded backoff (≤ 300 s)
     /// instead of spinning.
     public static func agentLoop(paths: JournalPaths, pollTimeoutSeconds: Int = 60,
                                  afterRecovery: (() -> Void)? = nil, shouldStop: () -> Bool = { false }) {
         var failures = 0
+        var previousSummary: String?
+        var onlyMissingBoot = false
         while !shouldStop() {
-            waitForOpenGroups(paths: paths, timeoutSeconds: pollTimeoutSeconds, shouldStop: shouldStop)
+            if onlyMissingBoot {
+                waitForChange(paths: paths, timeoutSeconds: Double(pollTimeoutSeconds), recheck: {
+                    JournalReader.read(path: paths.journal).openGroups().contains { $0.boot != nil }
+                })
+            } else {
+                waitForOpenGroups(paths: paths, timeoutSeconds: pollTimeoutSeconds, shouldStop: shouldStop)
+            }
             if shouldStop() { return }
             let r = recoverOnce(paths: paths)
+            logChanged(r, previous: &previousSummary)
             afterRecovery?()
             if r == nil || r?.needsRetry == true {
-                failures = min(failures + 1, 7)
-                usleep(useconds_t(retryDelay(failures) * 1e6))
+                failures = min(failures + 1, 13)
+                waitForChange(paths: paths, timeoutSeconds: retryDelay(failures))
             } else {
                 failures = 0
             }
+            onlyMissingBoot = r?.needsRetry == false && r?.missingRecordedBoot.isEmpty == false
         }
     }
 
@@ -111,7 +140,6 @@ public enum ThawWatcher {
         }
         let me = JournalPid(pid: getpid(), start: ProcessProbe.startAbs(getpid()) ?? 0)
         let r = JournalRecovery.run(lock: lock, owner: me, consumeNotices: false)
-        log("recovery groups=\(r.openGroupsFound) thawed=\(r.thawed.map(\.pid)) ecoreCleared=\(r.eCoreCleared.map(\.pid)) skipped=\(r.skippedIdentity.map(\.pid)) unresolved=\(r.unresolved.map(\.pid)) unverifiedBoot=\(r.unverifiedBoot.map(\.pid)) bootDiscarded=\(r.discardedForBoot) corrupt=\(r.corrupt) rewriteFailed=\(r.rewriteFailed)")
         lock.release()
         return r
     }
@@ -122,16 +150,16 @@ public enum ThawWatcher {
 
     static func waitForOpenGroups(paths: JournalPaths, timeoutSeconds: Int = 60, shouldStop: () -> Bool = { false }) {
         while !hasOpenGroups(paths), !shouldStop() {
-            waitForChange(paths: paths, timeoutSeconds: timeoutSeconds, recheck: { hasOpenGroups(paths) })
+            waitForChange(paths: paths, timeoutSeconds: Double(timeoutSeconds), recheck: { hasOpenGroups(paths) })
         }
     }
 
     /// Blocks in kevent() until the journal file or its directory changes, or the timeout expires.
     /// The directory is watched because recovery replaces the file with `rename`; the file itself is
     /// watched because appends do not modify the directory.
-    static func waitForChange(paths: JournalPaths, timeoutSeconds: Int, recheck: (() -> Bool)? = nil) {
+    static func waitForChange(paths: JournalPaths, timeoutSeconds: Double, recheck: (() -> Bool)? = nil) {
         let kq = kqueue()
-        guard kq >= 0 else { sleep(UInt32(timeoutSeconds)); return }
+        guard kq >= 0 else { usleep(useconds_t(timeoutSeconds * 1e6)); return }
         defer { close(kq) }
         var fds: [Int32] = []
         defer { fds.forEach { close($0) } }
@@ -148,8 +176,19 @@ public enum ThawWatcher {
         // Close the race between the caller's check and arming the watch.
         if let recheck, recheck() { return }
         var out = kevent()
-        var ts = timespec(tv_sec: timeoutSeconds, tv_nsec: 0)
+        let seconds = Int(timeoutSeconds)
+        var ts = timespec(tv_sec: seconds, tv_nsec: Int((timeoutSeconds - Double(seconds)) * 1e9))
         _ = kevent(kq, nil, 0, &out, 1, &ts)
+    }
+
+    static func summary(_ r: RecoveryReport?) -> String {
+        guard let r else { return "recovery unavailable" }
+        return "recovery groups=\(r.openGroupsFound) thawed=\(r.thawed.map(\.pid)) ecoreCleared=\(r.eCoreCleared.map(\.pid)) skipped=\(r.skippedIdentity.map(\.pid)) unresolved=\(r.unresolved.map(\.pid)) unverifiedBoot=\(r.unverifiedBoot.map(\.pid)) missingRecordedBoot=\(r.missingRecordedBoot.map(\.pid)) bootDiscarded=\(r.discardedForBoot) corrupt=\(r.corrupt) rewriteFailed=\(r.rewriteFailed)"
+    }
+
+    private static func logChanged(_ report: RecoveryReport?, previous: inout String?, emitLog: (String) -> Void = log) {
+        let current = summary(report)
+        if current != previous { emitLog(current); previous = current }
     }
 
     static func log(_ s: String) {
