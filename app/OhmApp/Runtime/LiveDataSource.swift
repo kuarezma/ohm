@@ -157,6 +157,8 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
             case .backgroundNeedsConfirmation: "Arka plan süreci için ek onay gerekli."
             case .protectionNotReady: "Kurtarma izleyicisi hazır değil."
             case .journalUnwritable: "Güvenlik günlüğü yazılamıyor."
+            case .bootUnverified: "Oturum kimliği doğrulanamıyor; dondurma ve E-core devre dışı."
+            case .recoveryPending: "Önceki oturumdan geri alınması bekleyen etkiler var."
             case .frontmost: "Öndeki uygulama dondurulamaz."
             case .notHidden: "Uygulamanın görünür pencereleri var."
             case .userNeverList: "Uygulama asla dondurulmayacaklar listesinde."
