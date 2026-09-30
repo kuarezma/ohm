@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run release (no signing/notarization)'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  release:
+    name: Release Build & Package
+    runs-on: xcode-27
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 27
+        run: |
+          if [ -d "/Applications/Xcode_27.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_27.app
+          elif [ -d "/Applications/Xcode_27.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_27.0.app
+          fi
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: |
+          if ! command -v xcodegen &> /dev/null; then
+            brew install xcodegen
+          fi
+
+      - name: Run Release Pipeline (Developer ID, Notarize, Staple, Zip)
+        env:
+          DEVELOPER_ID_CERT_P12_BASE64: ${{ secrets.DEVELOPER_ID_CERT_P12_BASE64 }}
+          DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+        run: |
+          chmod +x scripts/ci/release.sh
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            scripts/ci/release.sh --dry-run
+          else
+            # Not: Secrets yapılandırılmamışsa scripts/ci/release.sh açık mesajla atlar (exit 0)
+            scripts/ci/release.sh
+          fi
+
+      - name: Upload Release Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ohm-release-${{ github.ref_name }}
+          path: |
+            build/ci/Ohm-*.zip
+            build/ci/Ohm-*.sha256
+
+      # TODO(Sparkle): kullanıcı onayı bekleniyor
+      # - name: Generate Sparkle Appcast
+      #   if: false
+      #   run: |
+      #     echo "Sparkle appcast generation is disabled pending user decision."

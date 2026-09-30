@@ -209,6 +209,41 @@ public final class SafetyPolicy {
         return v
     }
 
+    /// E-core scope is separate from the freeze gate (ADR 0004, T-064).
+    func eCoreScopeVetoes(_ app: RunningAppInfo) -> [FreezeVeto] {
+        var vetoes = scopeVetoes(app, forRule: false, confirmedBackground: true)
+        if app.activationPolicy != .regular, app.bundleID?.hasPrefix("com.apple.") == true {
+            vetoes.append(.notRegularApp)
+        }
+        // Only a measured canonical executable path may lift the Apple/system vetoes.
+        // Never fall back to an unresolved path: an Applications symlink can target a daemon.
+        guard let executable = app.executablePath else { return vetoes }
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(executable, &buffer) != nil else { return vetoes }
+        let resolved = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        if let own = config.ownBundlePath, resolved.hasPrefix(bundlePrefix(own)),
+           !vetoes.contains(.ohmItself) {
+            vetoes.append(.ohmItself)
+        }
+        let allowedRoots = ["/Applications/", "/System/Applications/",
+                            "/System/Cryptexes/App/System/Applications/"]
+        let isUserApp = app.activationPolicy == .regular && allowedRoots.contains { root in
+            // Safari's Cryptex directory itself resolves into /System/Volumes/Preboot/.
+            let canonicalRoot = bundlePrefix(root)
+            guard resolved.hasPrefix(canonicalRoot) else { return false }
+            let components = resolved.dropFirst(canonicalRoot.count).split(separator: "/")
+            // A directory ending in .app must contain the executable, not be the executable.
+            return components.dropLast().contains { $0.hasSuffix(".app") }
+        }
+        if isUserApp {
+            vetoes.removeAll { $0 == .systemPath || $0 == .appleBundle }
+        } else if config.protectedPathPrefixes.contains(where: { resolved.hasPrefix($0) }),
+                  !vetoes.contains(.systemPath) {
+            vetoes.append(.systemPath)
+        }
+        return vetoes
+    }
+
     /// Dynamic vetoes over `pids` (every pid of the tree snapshot, D4).
     /// A probe that could not measure yields `.safetyProbeFailed` (never "safe", T-024 #7).
     func treeVetoes(_ app: RunningAppInfo, pids: [Int32], forRule: Bool) -> [FreezeVeto] {
