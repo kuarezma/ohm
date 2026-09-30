@@ -110,6 +110,7 @@ Kalıcı JSON'un tamamı (`rules.json`, App Group kapsayıcısında, tek yazar `
 
 **Doğrulama (`RuleValidator`, kaydetmeden önce ve yüklerken):**
 - Ağaç derinliği ≤ 3, yaprak koşul sayısı ≤ 8, hedef ≤ 10 uygulama, en fazla 50 kural.
+- `all`/`any` düğümleri boş olamaz (1…8 öğe). Pil eşiği 1…99 ve varsa histerezis 1…10 olmalıdır; saat alanları geçerli yerel saat, ön plan uygulama adı ve Focus profil adı dolu olmalıdır. Bu kontroller iç içe koşullara da uygulanır.
 - `freeze` eylemi yalnız `apps` hedefiyle kullanılabilir. `allApps` ve `runaway` ile dondurma yapılmaz. Kaçak süreçler yalnız kullanıcı onayıyla dondurulur (ADR 0004).
 - `freeze` hedefindeki her uygulama, ADR 0004'teki kalıcı "asla dondurma" listesine karşı kaydederken kontrol edilir. Listede olan uygulama kaydı reddedilir ve gerekçesi gösterilir.
 - `unsupported` bir koşul içeren kural (daha yeni bir Ohm sürümünde yazılmış olabilir) devre dışı yüklenir. Ham JSON'u korunur ve dosya yeniden yazılırken silinmez.
@@ -145,7 +146,7 @@ Olaylar 250 ms içinde birleştirilir (coalescing). Motor her değerlendirmede `
 | `focus`, `focusProfile` | 0 | 5 sn | |
 
 **Düzey ve kenar:**
-- `eCore` ve `freeze` **düzey tetiklemelidir** (level-triggered). Kural `active` olduğu sürece katkısı "istenen durum"da (`DesiredState`) yer alır. `inactive` olunca, devre dışı bırakılınca veya silinince katkı kalkar. Geri alma bu katkı farkından kendiliğinden doğar; ayrı bir "geri al" eylemi yoktur.
+- `eCore` ve `freeze` **düzey tetiklemelidir** (level-triggered). Kural `active` olduğu sürece katkısı "istenen durum"da (`DesiredState`) yer alır. `pendingInactive` boyunca katkı korunur; koşul yeniden doğru olursa katkı kesilmeden `active` durumuna dönülür. Yalnız gerçek `inactive` geçişinde, devre dışı bırakılınca veya silinince katkı kalkar. Geri alma bu katkı farkından kendiliğinden doğar; ayrı bir "geri al" eylemi yoktur.
 - `notify` **kenar tetiklemelidir** (edge-triggered). Yalnız `inactive → active` geçişinde, `notifyCooldown` süresi dolmuşsa ateşlenir. Aynı değerlendirmede ateşlenen bildirimler tek bir bildirimde birleştirilir.
 
 **Uzlaştırma (reconciliation):** `RuleEngine`, her aktif kuralın hedeflerini `AppKey`'e çözer ve `DesiredState` üretir. Bu durum her uygulama için istenen etkiler kümesini ve bunların kaynaklarını içerir. `Governor.reconcile` gerçek durumu istenen duruma getirir. Governor yalnız **kendi uyguladığı** etkiyi geri alır; bunun için kendi kaydını tutar. T-012, `getpriority(PRIO_DARWIN_PROCESS, pid)` çağrısının BG politikası uygulanmışken de 0 döndürdüğünü gösterdi. Bu yüzden politika durumu sistemden okunamaz, `ECoreLane`'in kaydı (ve journal, ADR 0004) tek doğruluk kaynağıdır. Buradan çıkan bilinen sınır: Başka bir araç (ör. `taskpolicy -b`, App Tamer) aynı sürece BG politikası koyduysa Ohm bunu ayırt edemez. Ohm kendi E-core'unu kaldırırken `0` yazar ve o aracın politikasını da kaldırmış olur. Arayüz bu durumu E-core açıklamasında belirtir. Hedef uygulama o anda çalışmıyorsa istek beklemede kalır ve uygulama açılınca uygulanır.
@@ -290,6 +291,8 @@ public enum RuleDraft: Sendable {
 }
 ```
 
+**Derleyici kapısı:** Eksik yüzde, saat, termal seviye, ön plan uygulama adı veya Focus profil adı davranışı değiştiren varsayılanlarla tamamlanmaz; sonuç `unsupported` olur. Her `ready` ve `needsClarification` sonucu öncesinde `RuleValidator` çalışır. DTO dönüşümü saat koşulunu, cümlede `:` bulunmasa bile korur; örneğin "22 ile 7 arasında" koşulsuz bir kurala dönüşemez.
+
 **Hiçbir zaman sessizce zayıflatma yok.** Cümlenin bir kısmı ifade edilemiyorsa derleyici o kısmı atıp daha gevşek bir kural üretmez. Örneğin "10 dakika sonra" cümlede geçip de kuralda 5 dakikalık varsayılan kullanılmaz; sonuç `unsupported` olur. Arayüz şunu gösterir: "Şu kısmı kural diline çeviremedim: '…'. Cümleyi değiştirebilir ya da kuralı elle kurabilirsin."
 
 **`RuleCompiler` kuralları (deterministik, birim testli):**
@@ -307,7 +310,7 @@ public enum RuleDraft: Sendable {
    - `batteryAtOrAbove` normalize edilmez.
    - Onay ekranı eklenen koşulu açıkça gösterir.
    - **Zorunlu testler:** `all` ile tek eşik; `any` ile eşik ve termal; `any` ile iki ayrı eşik; `any` ile eşik ve `onAC` (→ soru); `onBattery` açıkça verilmiş (→ değişiklik yok).
-3. **Uygulama adı çözümü:** Ad önce çalışan uygulamalarda, sonra `/Applications`, `~/Applications` ve `/System/Applications` altındaki paket adlarında aranır. Eşleştirme büyük-küçük harf duyarsızdır ve tam eşleşme, sonra kelime öneki olarak yapılır ("Chrome" → "Google Chrome"). Tek aday çıkarsa `AppRef` o olur. Birden çok aday (Chrome ve Chrome Canary) veya hiç aday yoksa taslak "çözülmemiş" işaretlenir ve onay ekranında seçici gösterilir.
+3. **Uygulama adı çözümü:** Ad önce çalışan uygulamalarda, sonra `/Applications`, `~/Applications` ve `/System/Applications` altındaki paket adlarında aranır. Eşleştirme büyük-küçük harf duyarsızdır ve tam eşleşme, sonra kelime öneki olarak yapılır ("Chrome" → "Google Chrome"). Sabit ad/bundle ID tablosu yalnız arama ipucudur; tek başına kimlik kanıtı değildir. Kimlik kurulu uygulama paketinden veya çağıranın doğrulanmış envanterinden gelmelidir. Tek kimlikli aday çıkarsa `AppRef` o olur. Birden çok aday (Chrome ve Chrome Canary) veya hiç aday yoksa taslak "çözülmemiş" işaretlenir ve onay ekranında seçici gösterilir. Bu yol hedeflere ve `frontmostIs`/`frontmostIsNot` koşullarına aynı şekilde uygulanır; soru çözülene kadar ilk aday seçilmez ve taslak devre dışı kalır.
 4. `targetApps` boş ve `targetRunaway` yanlışsa taslak geçersizdir; kullanıcıdan hedef istenir.
 5. **NL kuralları hiçbir zaman kendiliğinden etkinleşmez.** Onay ekranında insan diliyle özet gösterilir, örneğin "Pildeyken ve pil %30'un altındayken → Google Chrome → E-core". Kullanıcı [Kaydet] demeden kural `enabled = false` kalır.
    - Özet, kuralın **her** kısıtını gösterir. Cümleden gelmeyen değerler "(varsayılan)" etiketiyle yazılır, örneğin "5 dk ön plana gelmezse (varsayılan)" veya "öne gelince E-core'u bırak (varsayılan)".

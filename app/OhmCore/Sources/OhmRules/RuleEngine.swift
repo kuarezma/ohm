@@ -64,7 +64,7 @@ public actor RuleEngine: RuleEvaluating {
         // Suppress all currently active rules contributing to appKey
         var activeRuleIDs = Set<UUID>()
         for rule in rules where rule.enabled {
-            if ruleStates[rule.id] == .active {
+            if contributes(ruleStates[rule.id]) {
                 activeRuleIDs.insert(rule.id)
             }
         }
@@ -236,7 +236,7 @@ public actor RuleEngine: RuleEvaluating {
         // Collect contributions for active rules
         var contributionsByApp: [AppKey: [AppContribution]] = [:]
 
-        for rule in rules where rule.enabled && ruleStates[rule.id] == .active {
+        for rule in rules where rule.enabled && contributes(ruleStates[rule.id]) {
             let targetKeys = resolveTargetKeys(rule.targets, context: context)
             for appKey in targetKeys {
                 // Check if suppressed by manual override
@@ -305,6 +305,15 @@ public actor RuleEngine: RuleEvaluating {
             nextDeadline: nextDeadline,
             ruleStates: ruleStates
         )
+    }
+
+    private func contributes(_ state: RuleRuntimeState?) -> Bool {
+        switch state {
+        case .active, .pendingInactive:
+            return true
+        default:
+            return false
+        }
     }
 
     private func handleBecameInactive(ruleID: UUID) {
