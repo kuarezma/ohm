@@ -1,10 +1,10 @@
 import SwiftUI
+import AppKit
 import OhmModel
 
 public struct MenuBarLabelView: View {
     @Bindable var store: OhmStore
     @Environment(\.locale) private var locale
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(store: OhmStore) {
         self.store = store
@@ -58,20 +58,26 @@ public struct MenuBarLabelView: View {
     }
 
     private var wattRing: some View {
-        ZStack {
-            Circle()
-                .stroke(thermalColor.opacity(0.28), lineWidth: 2.2)
+        // MenuBarExtra extracts an Image from its label; arbitrary Shape views are omitted.
+        let color = NSColor(thermalColor)
+        let fraction = wattFraction
+        let ringImage = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { _ in
+            color.withAlphaComponent(0.28).setStroke()
+            let track = NSBezierPath(ovalIn: NSRect(x: 1.1, y: 1.1, width: 11.8, height: 11.8))
+            track.lineWidth = 2.2
+            track.stroke()
 
-            Circle()
-                .trim(from: 0, to: wattFraction)
-                .stroke(
-                    thermalColor,
-                    style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: wattFraction)
+            color.setStroke()
+            let arc = NSBezierPath()
+            arc.lineWidth = 2.2
+            arc.lineCapStyle = .round
+            arc.appendArc(withCenter: NSPoint(x: 7, y: 7), radius: 5.9,
+                          startAngle: 90, endAngle: 90 - 360 * fraction, clockwise: true)
+            arc.stroke()
+            return true
         }
-        .frame(width: 14, height: 14)
+        return Image(nsImage: ringImage)
+            .renderingMode(.original)
     }
 
     private var wattText: some View {
