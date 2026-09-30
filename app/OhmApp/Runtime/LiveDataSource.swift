@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import OhmModel
+import OSLog
 
 private enum LiveAction: Sendable {
     case toggle(Effect, AppKey)
@@ -64,7 +65,12 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
                         }
                     }
                 }
-            } catch { self?.showFailure(error.localizedDescription) }
+            } catch {
+                // An accessory app's modeless alert can stay behind other windows; keep a log trail.
+                Logger(subsystem: "dev.ohm", category: "runtime")
+                    .error("runtime start failed: \(String(describing: error), privacy: .public)")
+                self?.showFailure(error.localizedDescription)
+            }
         }
     }
 

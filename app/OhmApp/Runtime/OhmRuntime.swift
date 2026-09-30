@@ -88,7 +88,8 @@ actor OhmRuntime {
 
     @concurrent
     static func make(source: LiveDataSource?, smoke: Bool = false) async throws -> OhmRuntime {
-        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.dev.ohm") else {
+        guard let group = appGroupIdentifier(),
+              let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else {
             throw RuntimeError.appGroupUnavailable
         }
         let path = container.appendingPathComponent("ledger.sqlite").path
@@ -331,15 +332,33 @@ enum RuntimeError: LocalizedError {
     case failure(String)
     var errorDescription: String? {
         switch self {
-        case .appGroupUnavailable: "group.dev.ohm kapsayıcısı açılamadı. Uygulamanın App Group imzasını doğrulayın."
+        case .appGroupUnavailable: "<TEAMID>.dev.ohm kapsayıcısı açılamadı. Uygulamanın App Group imzasını doğrulayın."
         case .failure(let message): message
         }
     }
 }
 
 extension OhmRuntime {
+    /// Read from the signed entitlements. macOS 15+ denies a LaunchServices-launched app its
+    /// `group.`-prefixed container unless a provisioning profile authorizes it; a team-prefixed
+    /// group needs no profile. A terminal launch hides this because TCC attributes to the terminal.
+    nonisolated static func appGroupIdentifier() -> String? {
+        guard let groups = signedEntitlement("com.apple.security.application-groups") as? [String] else { return nil }
+        return groups.first { $0.hasSuffix(".dev.ohm") }
+    }
+
+    private nonisolated static func signedEntitlement(_ key: String) -> Any? {
+        guard let task = SecTaskCreateFromSelf(nil) else { return nil }
+        return SecTaskCopyValueForEntitlement(task, key as CFString, nil)
+    }
+
     /// No live sampling, notifications, files or signals; no extra test target.
     static func selfCheck() async throws {
+        // Signed builds only: an unsigned build has no team and cannot open the ledger anyway.
+        if let team = signedEntitlement("com.apple.developer.team-identifier") as? String,
+           appGroupIdentifier() != "\(team).dev.ohm" {
+            throw RuntimeError.failure("App Group takım önekli değil (\(appGroupIdentifier() ?? "yok")); LaunchServices açılışında kapsayıcı reddedilir.")
+        }
         var stages: [String] = []
         await RuntimeTickDelivery.deliver(record: { stages.append("ledger") },
                                          forecast: { stages.append("forecast") },
