@@ -239,17 +239,8 @@ struct GeneratedRuleDTO {
 
         // Sanitize conditions
         var sanitizedConditions = conditions.compactMap { cond -> GeneratedConditionDTO? in
-            // Remove fake timeBetween generated when no time of day was mentioned
-            if cond.kind == .timeBetween {
-                if let sentence = rawSentence, !sentence.contains(":") {
-                    return nil
-                }
-                if let s = cond.start, cond.end != nil {
-                    if (s == "00:00" || s == "0:00") && validFreezeMinutes != nil {
-                        return nil
-                    }
-                }
-            }
+            // Keep every generated time constraint, including bare hours such as
+            // "22 ile 7". Invalid or missing fields are rejected by the compiler.
 
             // Fix polarity of frontmostIsNot vs frontmostIs if model inverted it
             if cond.kind == .frontmostIsNot {

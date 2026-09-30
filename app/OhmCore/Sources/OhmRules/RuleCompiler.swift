@@ -19,28 +19,53 @@ public struct DefaultAppResolver: AppResolving, Sendable {
     ]
 
     public var customMappings: [String: [AppRef]]
+    private let applicationInventory: [AppRef]
 
     public init(customMappings: [String: [AppRef]] = [:]) {
+        self.init(customMappings: customMappings, applicationInventory: Self.installedApplications())
+    }
+
+    // A snapshot makes resolution deterministic and avoids rescanning for each name.
+    init(customMappings: [String: [AppRef]] = [:], applicationInventory: [AppRef]) {
         self.customMappings = customMappings
+        self.applicationInventory = applicationInventory
     }
 
     public func resolve(appName: String) -> [AppRef] {
         let key = appName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let custom = customMappings[key] {
-            return custom
+        guard !key.isEmpty else { return [] }
+        if let custom = customMappings[key] { return custom }
+
+        // The alias table is only a search hint; identity must come from a real bundle.
+        let exact = applicationInventory.filter {
+            $0.displayName.lowercased() == key
         }
-        if let match = Self.standardApps[key] {
-            return [AppRef(bundleID: match.bundleID, displayName: match.displayName)]
+        if !exact.isEmpty { return exact }
+        return applicationInventory.filter {
+            $0.bundleID == Self.standardApps[key]?.bundleID ||
+                $0.displayName.lowercased().split(separator: " ").contains { $0.hasPrefix(key) }
         }
-        let prefixMatches = Self.standardApps.filter {
-            $0.key.hasPrefix(key) || $0.value.displayName.lowercased().hasPrefix(key)
+    }
+
+    private static func installedApplications() -> [AppRef] {
+        let fileManager = FileManager.default
+        let roots = [URL(fileURLWithPath: "/Applications"),
+                     fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications"),
+                     URL(fileURLWithPath: "/System/Applications")]
+        var appsByIdentity: [String: AppRef] = [:]
+        for root in roots {
+            guard let entries = fileManager.enumerator(at: root, includingPropertiesForKeys: nil,
+                                                       options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            for case let url as URL in entries where url.pathExtension == "app" {
+                guard let bundle = Bundle(url: url), let bundleID = bundle.bundleIdentifier,
+                      !bundleID.isEmpty else { continue }
+                let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+                    ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
+                    ?? url.deletingPathExtension().lastPathComponent
+                appsByIdentity[bundleID] = AppRef(bundleID: bundleID, displayName: name)
+            }
         }
-        if prefixMatches.count == 1, let match = prefixMatches.first?.value {
-            return [AppRef(bundleID: match.bundleID, displayName: match.displayName)]
-        } else if prefixMatches.count > 1 {
-            return prefixMatches.values.map { AppRef(bundleID: $0.bundleID, displayName: $0.displayName) }
-        }
-        return [AppRef(bundleID: nil, displayName: appName)]
+        return appsByIdentity.values.sorted { ($0.bundleID ?? "") < ($1.bundleID ?? "") }
     }
 }
 
@@ -113,26 +138,31 @@ public struct RuleCompiler: Sendable {
         }
 
         var clarifications: [Clarification] = []
-        var resolvedApps: [AppRef] = []
-        if !generated.targetRunaway {
-            for appName in generated.targetApps {
-                let candidates = appResolver.resolve(appName: appName)
-                if candidates.count == 1 {
-                    resolvedApps.append(candidates[0])
-                } else if candidates.isEmpty {
-                    clarifications.append(Clarification(
-                        question: "'\(appName)' uygulaması bulunamadı. Lütfen hedef uygulamayı seçin.",
-                        options: []
-                    ))
-                    resolvedApps.append(AppRef(displayName: appName))
-                } else {
-                    clarifications.append(Clarification(
-                        question: "'\(appName)' için birden çok aday bulundu. Hangisi seçilsin?",
-                        options: candidates.map(\.displayName)
-                    ))
-                    resolvedApps.append(candidates[0])
-                }
+        func resolveApp(_ appName: String) -> AppRef {
+            let candidates = appResolver.resolve(appName: appName)
+            if candidates.count == 1, let app = candidates.first,
+               [app.bundleID, app.executableName].contains(where: {
+                   !($0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+               }) {
+                return app
             }
+            let ambiguous = candidates.count > 1
+            clarifications.append(Clarification(
+                question: ambiguous
+                    ? "'\(appName)' için birden çok aday bulundu. Hangisi seçilsin?"
+                    : "'\(appName)' uygulaması bulunamadı. Lütfen uygulamayı seçin.",
+                options: ambiguous ? candidates.map(\.displayName) : []
+            ))
+            // No candidate is selected until the user resolves the question.
+            return AppRef(displayName: appName)
+        }
+
+        let resolvedApps = generated.targetRunaway ? [] : generated.targetApps.map(resolveApp)
+        let convertedConditions: [Condition]
+        do {
+            convertedConditions = try generated.conditions.map { try convertCondition($0, resolveApp: resolveApp) }
+        } catch {
+            return .unsupported(phrases: [String(describing: error)])
         }
 
         let targetSelector: TargetSelector
@@ -167,7 +197,7 @@ public struct RuleCompiler: Sendable {
                 question: "Pil eşiği yalnız pildeyken mi geçerli olsun?",
                 options: ["Yalnız pildeyken", "Her zaman"]
             ))
-            let baseWhen = Condition.any(generated.conditions.map { convertCondition($0) })
+            let baseWhen = Condition.any(convertedConditions)
             let rule = Rule(
                 schemaVersion: 1,
                 id: id,
@@ -179,6 +209,8 @@ public struct RuleCompiler: Sendable {
                 actions: actions,
                 options: RuleOptions()
             )
+            do { try RuleValidator.validate(rule: rule) }
+            catch { return .unsupported(phrases: [String(describing: error)]) }
             return .needsClarification(rule, questions: clarifications)
         }
 
@@ -186,12 +218,11 @@ public struct RuleCompiler: Sendable {
         if hasBatteryBelow && !hasOnBattery && !hasOnAC {
             // Apply normalization
             if generated.match == .all {
-                let convertedLeaves = generated.conditions.map { convertCondition($0) }
+                let convertedLeaves = convertedConditions
                 when = .all([.powerSource(.battery)] + convertedLeaves)
             } else {
                 // match == .any: wrap each batteryBelow leaf in all(b, powerSource(battery))
-                let convertedLeaves = generated.conditions.map { cond -> Condition in
-                    let converted = convertCondition(cond)
+                let convertedLeaves = zip(generated.conditions, convertedConditions).map { cond, converted -> Condition in
                     if cond.kind == .batteryBelow {
                         return .all([converted, .powerSource(.battery)])
                     } else {
@@ -203,11 +234,11 @@ public struct RuleCompiler: Sendable {
         } else {
             // No normalization needed
             if generated.conditions.count == 1 {
-                when = convertCondition(generated.conditions[0])
+                when = convertedConditions[0]
             } else if generated.match == .all {
-                when = .all(generated.conditions.map { convertCondition($0) })
+                when = .all(convertedConditions)
             } else {
-                when = .any(generated.conditions.map { convertCondition($0) })
+                when = .any(convertedConditions)
             }
         }
 
@@ -223,39 +254,55 @@ public struct RuleCompiler: Sendable {
             options: RuleOptions()
         )
 
+        do { try RuleValidator.validate(rule: rule) }
+        catch { return .unsupported(phrases: [String(describing: error)]) }
+
         if !clarifications.isEmpty {
             return .needsClarification(rule, questions: clarifications)
         }
         return .ready(rule)
     }
 
-    private func convertCondition(_ gen: GeneratedCondition) -> Condition {
+    private func convertCondition(_ gen: GeneratedCondition, resolveApp: (String) -> AppRef) throws -> Condition {
         switch gen.kind {
         case .onBattery:
             return .powerSource(.battery)
         case .onAC:
             return .powerSource(.ac)
         case .batteryBelow:
-            return .batteryPercent(.below, value: gen.percent ?? 0, hysteresis: nil)
+            guard let percent = gen.percent else { throw RuleValidationError("Pil yüzdesi belirtilmelidir") }
+            return .batteryPercent(.below, value: percent, hysteresis: nil)
         case .batteryAtOrAbove:
-            return .batteryPercent(.atOrAbove, value: gen.percent ?? 0, hysteresis: nil)
+            guard let percent = gen.percent else { throw RuleValidationError("Pil yüzdesi belirtilmelidir") }
+            return .batteryPercent(.atOrAbove, value: percent, hysteresis: nil)
         case .thermalAtLeast:
             let level: ThermalLevel
-            switch gen.thermal ?? .serious {
+            guard let thermal = gen.thermal else { throw RuleValidationError("Termal seviye belirtilmelidir") }
+            switch thermal {
             case .fair: level = .fair
             case .serious: level = .serious
             case .critical: level = .critical
             }
             return .thermal(atLeast: level)
         case .frontmostIs:
-            let app = appResolver.resolve(appName: gen.appName ?? "").first ?? AppRef(displayName: gen.appName ?? "")
+            guard let name = gen.appName, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw RuleValidationError("Ön plan koşulunda uygulama adı belirtilmelidir")
+            }
+            let app = resolveApp(name)
             return .frontmostApp(app)
         case .frontmostIsNot:
-            let app = appResolver.resolve(appName: gen.appName ?? "").first ?? AppRef(displayName: gen.appName ?? "")
+            guard let name = gen.appName, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw RuleValidationError("Ön plan koşulunda uygulama adı belirtilmelidir")
+            }
+            let app = resolveApp(name)
             return .not(.frontmostApp(app))
         case .timeBetween:
-            let start = LocalTime(string: gen.start ?? "00:00") ?? LocalTime(hour: 0, minute: 0)
-            let end = LocalTime(string: gen.end ?? "00:00") ?? LocalTime(hour: 0, minute: 0)
+            guard let startText = gen.start, let endText = gen.end,
+                  startText.count == 5, endText.count == 5,
+                  let start = LocalTime(string: startText), let end = LocalTime(string: endText),
+                  start.formattedString == startText, end.formattedString == endText else {
+                throw RuleValidationError("Saat aralığının başlangıcı ve bitişi HH:mm biçiminde belirtilmelidir")
+            }
             let weekdays = gen.weekdays.map { Set($0.compactMap { Weekday(rawValue: $0.rawValue) }) }
             return .timeWindow(start: start, end: end, weekdays: weekdays)
         case .focusOn:
@@ -263,7 +310,8 @@ public struct RuleCompiler: Sendable {
         case .focusOff:
             return .focus(isOn: false)
         case .focusProfile:
-            return .focusProfile(gen.focusProfile ?? "")
+            guard let profile = gen.focusProfile else { throw RuleValidationError("Focus profil adı belirtilmelidir") }
+            return .focusProfile(profile)
         }
     }
 }

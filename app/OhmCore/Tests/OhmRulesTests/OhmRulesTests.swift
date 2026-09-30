@@ -240,7 +240,7 @@ struct OhmRulesTests {
     // MARK: - 2. The 5 Mandatory Battery-Normalization Tests (ADR 0003 § 4)
 
     @Test func batteryNorm_1_allWithSingleThreshold() {
-        let compiler = RuleCompiler()
+        let compiler = RuleCompiler(appResolver: confirmedTestResolver)
         let generated = GeneratedRule(
             name: "Test 1",
             targetApps: ["Chrome"],
@@ -264,7 +264,7 @@ struct OhmRulesTests {
     }
 
     @Test func batteryNorm_2_anyWithThresholdAndThermal() {
-        let compiler = RuleCompiler()
+        let compiler = RuleCompiler(appResolver: confirmedTestResolver)
         let generated = GeneratedRule(
             name: "Test 2",
             targetApps: ["Docker"],
@@ -292,7 +292,7 @@ struct OhmRulesTests {
     }
 
     @Test func batteryNorm_3_anyWithTwoDistinctThresholds() {
-        let compiler = RuleCompiler()
+        let compiler = RuleCompiler(appResolver: confirmedTestResolver)
         let generated = GeneratedRule(
             name: "Test 3",
             targetApps: ["Slack"],
@@ -323,7 +323,7 @@ struct OhmRulesTests {
     }
 
     @Test func batteryNorm_4_anyWithThresholdAndAC_needsClarification() {
-        let compiler = RuleCompiler()
+        let compiler = RuleCompiler(appResolver: confirmedTestResolver)
         let generated = GeneratedRule(
             name: "Test 4",
             targetApps: ["Chrome"],
@@ -345,7 +345,7 @@ struct OhmRulesTests {
     }
 
     @Test func batteryNorm_5_explicitOnBattery_noChange() {
-        let compiler = RuleCompiler()
+        let compiler = RuleCompiler(appResolver: confirmedTestResolver)
         let generated = GeneratedRule(
             name: "Test 5",
             targetApps: ["Chrome"],
@@ -638,7 +638,7 @@ struct OhmRulesTests {
     // MARK: - 6. Unsupported Never Silently Produces Weaker Rule
 
     @Test func unsupported_neverProducesWeakerRule() {
-        let compiler = RuleCompiler()
+        let compiler = RuleCompiler(appResolver: confirmedTestResolver)
 
         // 1. Model returned unsupported phrase
         let genWithUnsupported = GeneratedRule(
@@ -725,7 +725,7 @@ struct OhmRulesTests {
 
         let decoder = JSONDecoder()
         let generated = try decoder.decode(GeneratedRule.self, from: Data(json.utf8))
-        let compiler = RuleCompiler()
+        let compiler = RuleCompiler(appResolver: confirmedTestResolver)
 
         let fixedUUID = UUID(uuidString: "3F2A7C1E-0B6D-4E8A-9C11-2D5E8F0A6B01")!
         let draft = compiler.compile(

@@ -22,8 +22,8 @@ public enum RuleValidator {
     ) throws {
         // Target apps count (1...10)
         if case .apps(let apps) = rule.targets {
-            if apps.count > maxTargetApps {
-                throw RuleValidationError("Hedef uygulama sayısı en fazla \(maxTargetApps) olabilir (verilen: \(apps.count))")
+            if apps.isEmpty || apps.count > maxTargetApps {
+                throw RuleValidationError("Hedef uygulama sayısı 1–\(maxTargetApps) arasında olmalıdır (verilen: \(apps.count))")
             }
         }
 
@@ -38,6 +38,8 @@ public enum RuleValidator {
         if leafCount > maxLeafConditions {
             throw RuleValidationError("Yaprak koşul sayısı en fazla \(maxLeafConditions) olabilir (verilen: \(leafCount))")
         }
+
+        try validateCondition(rule.when)
 
         // Freeze restrictions
         let hasFreeze = rule.actions.contains { action in
@@ -82,6 +84,38 @@ public enum RuleValidator {
         }
         for rule in rules {
             try validate(rule: rule, neverFreezeBundleIDs: neverFreezeBundleIDs)
+        }
+    }
+
+    private static func validateCondition(_ condition: Condition) throws {
+        switch condition {
+        case .all(let conditions), .any(let conditions):
+            guard !conditions.isEmpty, conditions.count <= maxLeafConditions else {
+                throw RuleValidationError("all/any koşulu 1–8 öğe içermelidir")
+            }
+            for child in conditions { try validateCondition(child) }
+        case .not(let child):
+            try validateCondition(child)
+        case .batteryPercent(_, let value, let hysteresis):
+            guard (1...99).contains(value) else { throw RuleValidationError("Pil yüzdesi 1–99 arasında olmalıdır") }
+            if let hysteresis, !(1...10).contains(hysteresis) {
+                throw RuleValidationError("Pil histerezisi 1–10 arasında olmalıdır")
+            }
+        case .timeWindow(let start, let end, _):
+            guard (0...23).contains(start.hour), (0...59).contains(start.minute),
+                  (0...23).contains(end.hour), (0...59).contains(end.minute) else {
+                throw RuleValidationError("Geçersiz saat aralığı")
+            }
+        case .frontmostApp(let app):
+            guard !app.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw RuleValidationError("Ön plan koşulunda uygulama adı belirtilmelidir")
+            }
+        case .focusProfile(let profile):
+            guard !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw RuleValidationError("Focus profil adı belirtilmelidir")
+            }
+        default:
+            break
         }
     }
 
