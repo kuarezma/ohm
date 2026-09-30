@@ -1,6 +1,23 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "No widget data in this build": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No widget data in this build"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu derlemede widget verisi yok"
+          }
+        }
+      }
+    },
     "Today's receipt" : {
       "extractionState" : "manual",
       "localizations" : {

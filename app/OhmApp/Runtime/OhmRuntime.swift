@@ -20,6 +20,8 @@ struct DashboardSnapshot: Sendable {
 }
 
 struct RuntimeSmokeReport: Sendable, Encodable {
+    let storage: String
+    let ledgerPath: String
     let ticks: Int
     let ledgerMinuteRows: Int
     let watts: Double
@@ -51,6 +53,12 @@ private actor RuntimeLedgerReader {
 
 /// Shared by production delivery and the executable's deterministic self-check.
 nonisolated enum RuntimeTickDelivery {
+    static func shouldFlush(minute: Int64, previousMinute: Int64?, storage: RuntimeStorage.Mode) -> Bool {
+        // Expose the first preview measurement immediately, even if its interval crossed :00.
+        // Shared storage retains its existing minute-boundary schedule.
+        previousMinute.map { $0 != minute } ?? (storage == .local)
+    }
+
     static func deliver(isolation: isolated (any Actor)? = #isolation,
                         record: () async throws -> Void, forecast: () async -> Void,
                         detect: () async -> Void, publish: () async -> Void) async rethrows {
@@ -62,6 +70,12 @@ nonisolated enum RuntimeTickDelivery {
 }
 
 actor OhmRuntime {
+    let storageMode: RuntimeStorage.Mode
+    private let ledgerPath: String
+    private let logger = Logger(subsystem: "dev.ohm", category: "runtime")
+    private var firstFlushRequested = false
+    private var firstFlushCompleted = false
+    private var lastFailureLogs: [String: ContinuousClock.Instant] = [:]
     private let engine: SamplingEngine
     private let ledger: EnergyLedger
     private let reader: RuntimeLedgerReader
@@ -99,7 +113,10 @@ actor OhmRuntime {
 
     private init(engine: SamplingEngine, ledger: EnergyLedger, reader: RuntimeLedgerReader,
                  governor: Governor, ruleStore: RuleStore, ruleEngine: RuleEngine,
-                 contextBridge: ContextBridge?, source: LiveDataSource?) {
+                 contextBridge: ContextBridge?, source: LiveDataSource?, storageMode: RuntimeStorage.Mode,
+                 ledgerPath: String) {
+        self.storageMode = storageMode
+        self.ledgerPath = ledgerPath
         self.engine = engine
         self.ledger = ledger
         self.reader = reader
@@ -111,11 +128,11 @@ actor OhmRuntime {
     }
 
     @concurrent
-    static func make(source: LiveDataSource?, smoke: Bool = false, rulesFile: String? = nil, ruleStore: RuleStore? = nil) async throws -> OhmRuntime {
-        guard let group = appGroupIdentifier(),
-              let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else {
-            throw RuntimeError.appGroupUnavailable
-        }
+    static func make(source: LiveDataSource?, smoke: Bool = false, rulesFile: String? = nil, ruleStore: RuleStore? = nil, storage: RuntimeStorage? = nil) async throws -> OhmRuntime {
+        let selectedStorage: RuntimeStorage
+        if let storage { selectedStorage = storage }
+        else { selectedStorage = try await RuntimeStorage.prepare() }
+        let container = selectedStorage.directory
         let path = container.appendingPathComponent("ledger.sqlite").path
         let ledger = try EnergyLedger(path: path)
         let reader = try RuntimeLedgerReader(path: path)
@@ -141,7 +158,7 @@ actor OhmRuntime {
         } else if let rulesFile {
             store = RuleStore(fileURL: URL(fileURLWithPath: rulesFile))
         } else {
-            let url = RuleStore.defaultRulesURL() ?? container.appendingPathComponent("rules.json")
+            let url = container.appendingPathComponent("rules.json")
             store = RuleStore(fileURL: url)
         }
         let persisted = await store.load()
@@ -151,7 +168,8 @@ actor OhmRuntime {
         let runtime = OhmRuntime(engine: SamplingEngine.makeDefault(cadence: smoke ? .interactive : .ambient),
                                  ledger: ledger, reader: reader, governor: governor,
                                  ruleStore: store, ruleEngine: ruleEngine,
-                                 contextBridge: contextBridge, source: source)
+                                 contextBridge: contextBridge, source: source, storageMode: selectedStorage.mode,
+                                 ledgerPath: path)
         await runtime.setNeverFreeze(persisted.neverFreeze)
         return runtime
     }
@@ -207,30 +225,42 @@ actor OhmRuntime {
         }
         await evaluateRules()
         if !stopping, source != nil {
-            Logger(subsystem: "dev.ohm", category: "runtime")
-                .notice("runtime started protection=\(protection.rawValue, privacy: .public)")
+            logger.notice("runtime started storage=\(self.storageMode.rawValue, privacy: .public) protection=\(protection.rawValue, privacy: .public) ledger=\(self.ledgerPath, privacy: .public)")
         }
     }
 
     private func consume(_ tick: SampleTick) async {
         guard !stopping else { return }
         ticks += 1
+        if ticks == 1 {
+            logger.notice("runtime first tick storage=\(self.storageMode.rawValue, privacy: .public) interval=\(String(describing: tick.interval), privacy: .public) ledger=\(self.ledgerPath, privacy: .public)")
+            logger.notice("runtime first record requested")
+        }
         watts = tick.system.systemLoad ?? (tick.system.cpuP + tick.system.cpuE + (tick.system.gpu ?? 0))
         controlTop = ControlRouter.top(from: tick, watts: watts)
         await RuntimeTickDelivery.deliver(record: {
+            var operation = "record"
             do {
                 try await ledger.record(tick)
+                if ticks == 1 { logger.notice("runtime first record completed") }
                 let minute = Int64(floor(tick.wallClock.timeIntervalSince1970 / 60))
-                if let recordedMinute, minute != recordedMinute {
-                    try await ledger.flush()
-                    if lastMaintenanceAt.map({ tick.wallClock.timeIntervalSince($0) >= 86_400 }) ?? true {
+                if RuntimeTickDelivery.shouldFlush(minute: minute, previousMinute: recordedMinute, storage: storageMode) {
+                    operation = "flush"
+                    try await flushLedger()
+                    // The early local flush must not move daily maintenance into startup.
+                    if recordedMinute != nil,
+                       lastMaintenanceAt.map({ tick.wallClock.timeIntervalSince($0) >= 86_400 }) ?? true {
+                        operation = "maintain"
                         try await ledger.maintain(now: tick.wallClock)
                         lastMaintenanceAt = tick.wallClock
                     }
                 }
                 recordedMinute = minute
             }
-            catch { lastError = "Enerji kaydı yazılamadı: \(error.localizedDescription)" }
+            catch {
+                lastError = "Enerji kaydı yazılamadı: \(error.localizedDescription)"
+                logLedgerFailure(error, operation: operation)
+            }
         }, forecast: {
             await forecaster.observe(tick)
         }, detect: {
@@ -267,7 +297,28 @@ actor OhmRuntime {
             }
             guard !stopping else { return }
             await source?.apply(snapshot, events: pendingRunawayEvents)
+            if ticks == 1 { logger.notice("runtime first tick delivered") }
         })
+    }
+
+    private func flushLedger() async throws {
+        if !firstFlushRequested {
+            firstFlushRequested = true
+            logger.notice("runtime first flush requested storage=\(self.storageMode.rawValue, privacy: .public) ledger=\(self.ledgerPath, privacy: .public)")
+        }
+        try await ledger.flush()
+        if !firstFlushCompleted {
+            firstFlushCompleted = true
+            logger.notice("runtime first flush completed storage=\(self.storageMode.rawValue, privacy: .public) ledger=\(self.ledgerPath, privacy: .public)")
+        }
+    }
+
+    private func logLedgerFailure(_ error: any Error, operation: String) {
+        let now = ContinuousClock.now
+        // At most one error per operation per minute; wall-clock changes cannot bypass the limit.
+        if let previous = lastFailureLogs[operation], previous.duration(to: now) < .seconds(60) { return }
+        lastFailureLogs[operation] = now
+        logger.error("runtime ledger failed operation=\(operation, privacy: .public) storage=\(self.storageMode.rawValue, privacy: .public) ledger=\(self.ledgerPath, privacy: .public) error=\(String(describing: error), privacy: .public)")
     }
 
     private var pendingRunawayEvents: [RunawayEvent] = []
@@ -286,6 +337,10 @@ actor OhmRuntime {
                 triggerRuleEvaluation()
             }
         case .cadence(let cadence):
+            let previous = await engine.currentCadence
+            if previous != cadence {
+                logger.notice("runtime cadence changed from=\(String(describing: previous), privacy: .public) to=\(String(describing: cadence), privacy: .public)")
+            }
             receiptRequested = cadence == .interactive || receiptRequested
             await engine.setCadence(cadence)
         }
@@ -614,12 +669,21 @@ actor OhmRuntime {
         tasks.removeAll()
         running.forEach { $0.cancel() }
         for task in running { await task.value }
-        do { try await ledger.flush() }
-        catch { lastError = "Son enerji kayıtları yazılamadı: \(error.localizedDescription)" }
+        do { try await flushLedger() }
+        catch {
+            lastError = "Son enerji kayıtları yazılamadı: \(error.localizedDescription)"
+            logLedgerFailure(error, operation: "shutdownFlush")
+        }
     }
 
     func smokeReport() async throws -> RuntimeSmokeReport {
         if let lastError { throw RuntimeError.failure(lastError) }
+        // The headless caller requests this report before shutdown; count committed data.
+        do { try await flushLedger() }
+        catch {
+            logLedgerFailure(error, operation: "smokeFlush")
+            throw error
+        }
         let currentRules = await ruleStore.rules
         let activeCount = currentRules.filter { lastEvaluation?.ruleStates[$0.id] == .active }.count
         let desiredStr = Self.formatDesired(lastDesiredState)
@@ -650,6 +714,8 @@ actor OhmRuntime {
         appliedList.sort()
 
         return RuntimeSmokeReport(
+            storage: storageMode.rawValue,
+            ledgerPath: ledgerPath,
             ticks: ticks,
             ledgerMinuteRows: try await reader.minuteRows(since: startedAt, until: Date()),
             watts: watts,
@@ -665,17 +731,77 @@ actor OhmRuntime {
 }
 
 enum RuntimeError: LocalizedError {
-    case appGroupUnavailable
     case failure(String)
     var errorDescription: String? {
         switch self {
-        case .appGroupUnavailable: "<TEAMID>.dev.ohm kapsayıcısı açılamadı. Uygulamanın App Group imzasını doğrulayın."
         case .failure(let message): message
         }
     }
 }
 
 extension OhmRuntime {
+    private static func checkFirstLocalFlush(directory: URL) async throws {
+        // Startup at :53; a 10 s ambient timer with 10% tolerance first fires at :04.
+        // Before Rev 1, this tick remained only in memory until the *next* minute boundary.
+        let end = Date(timeIntervalSince1970: 64)
+        let tick = SampleTick(wallClock: end, interval: .seconds(11),
+                              system: SystemPower(cpuP: 0, cpuE: 0, systemLoad: 2),
+                              battery: BatteryState(source: .battery, percent: 80, voltage_mV: 12_000, amperage_mA: -100),
+                              thermal: .nominal,
+                              processes: [ProcessDelta(identity: ProcessIdentity(pid: 1, startAbsTime: 1),
+                                                       app: .bundle("example.storage"), energy_nJ: 1_000_000_000,
+                                                       pEnergy_nJ: 0, cpuTime_ns: 1_000_000_000)],
+                              unreadable: UnreadableSummary(readableCount: 1, unreadableCount: 0))
+        let minute: Int64 = 1
+        let ledger = try EnergyLedger(path: directory.appendingPathComponent("first-tick.sqlite").path)
+        let reader = try RuntimeLedgerReader(path: directory.appendingPathComponent("first-tick.sqlite").path)
+        try await ledger.record(tick)
+        guard try await reader.minuteRows(since: .init(timeIntervalSince1970: 0), until: end) == 0 else {
+            throw RuntimeError.failure("Regresyon düzeneği flush öncesi veri içeriyor.")
+        }
+        if RuntimeTickDelivery.shouldFlush(minute: minute, previousMinute: nil, storage: .local) {
+            try await ledger.flush()
+        }
+        guard try await reader.minuteRows(since: .init(timeIntervalSince1970: 0), until: end) >= 1,
+              try await reader.today(at: end).rows.contains(where: { $0.energy_uj > 0 }) else {
+            throw RuntimeError.failure("İlk yerel tick kalıcı değil; CLI fişi dakika sınırını bekliyor.")
+        }
+        for mode in [RuntimeStorage.Mode.local, .appGroup] {
+            guard !RuntimeTickDelivery.shouldFlush(minute: minute, previousMinute: minute, storage: mode),
+                  RuntimeTickDelivery.shouldFlush(minute: minute + 1, previousMinute: minute, storage: mode) else {
+                throw RuntimeError.failure("Dakikalık flush ritmi değişti.")
+            }
+        }
+        guard !RuntimeTickDelivery.shouldFlush(minute: minute, previousMinute: nil, storage: .appGroup) else {
+            throw RuntimeError.failure("İmzalı App Group ilk tick davranışı değişti.")
+        }
+        // :53 launch + 75 s gate = :128. With allowed 11 s timer spacing, tick endpoints
+        // :64, :75, :86, :97, :108, :119 are all in minute 1; minute 2 arrives at :130.
+        let sharedLedger = try EnergyLedger(path: directory.appendingPathComponent("shared-timing.sqlite").path)
+        let sharedReader = try RuntimeLedgerReader(path: directory.appendingPathComponent("shared-timing.sqlite").path)
+        var previousMinute: Int64?
+        for seconds in stride(from: 64, through: 119, by: 11) {
+            var nextTick = tick
+            nextTick.wallClock = Date(timeIntervalSince1970: Double(seconds))
+            try await sharedLedger.record(nextTick)
+            if RuntimeTickDelivery.shouldFlush(minute: minute, previousMinute: previousMinute, storage: .appGroup) {
+                try await sharedLedger.flush()
+            }
+            previousMinute = minute
+        }
+        guard try await sharedReader.minuteRows(since: .init(timeIntervalSince1970: 0),
+                                               until: .init(timeIntervalSince1970: 128)) == 0 else {
+            throw RuntimeError.failure("Önceki 75 saniyelik flush gecikmesi yeniden üretilemedi.")
+        }
+        let report = RuntimeSmokeReport(storage: "local", ledgerPath: directory.appendingPathComponent("first-tick.sqlite").path,
+                                        ticks: 1, ledgerMinuteRows: 2, watts: 2, runaways: 0, protection: "none",
+                                        rules: 0, rulesActive: 0, lastDesired: "", applied: [], vetoes: [])
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any]
+        guard json?["storage"] as? String == "local", json?["ledgerPath"] as? String == report.ledgerPath else {
+            throw RuntimeError.failure("Smoke JSON depolama modu veya ledger yolunu içermiyor.")
+        }
+    }
+
     /// Read from the signed entitlements. macOS 15+ denies a LaunchServices-launched app its
     /// `group.`-prefixed container unless a provisioning profile authorizes it; a team-prefixed
     /// group needs no profile. A terminal launch hides this because TCC attributes to the terminal.
@@ -689,13 +815,34 @@ extension OhmRuntime {
         return SecTaskCopyValueForEntitlement(task, key as CFString, nil)
     }
 
-    /// No live sampling, notifications, files or signals; no extra test target.
+    /// No live sampling or signals; storage checks use an isolated temporary directory.
     static func selfCheck() async throws {
-        // Signed builds only: an unsigned build has no team and cannot open the ledger anyway.
+        // Signed builds retain their team-prefixed App Group contract.
         if let team = signedEntitlement("com.apple.developer.team-identifier") as? String,
            appGroupIdentifier() != "\(team).dev.ohm" {
             throw RuntimeError.failure("App Group takım önekli değil (\(appGroupIdentifier() ?? "yok")); LaunchServices açılışında kapsayıcı reddedilir.")
         }
+        let storageRoot = FileManager.default.temporaryDirectory.appendingPathComponent("ohm-storage-check-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: storageRoot) }
+        let group = storageRoot.appendingPathComponent("group")
+        let local = storageRoot.appendingPathComponent("local")
+        let shared = try RuntimeStorage.select(appGroup: group, local: local)
+        guard shared.mode == .appGroup, shared.directory == group,
+              !FileManager.default.fileExists(atPath: local.path) else {
+            throw RuntimeError.failure("App Group depolama seçimi yanlış.")
+        }
+        let fallback = try RuntimeStorage.select(appGroup: nil, local: local)
+        // Also repair permissions on an existing directory, not just a newly created one.
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: local.path)
+        let unavailable = storageRoot.appendingPathComponent("not-a-directory")
+        try Data().write(to: unavailable)
+        let denied = try RuntimeStorage.select(appGroup: unavailable, local: local)
+        let permissions = try FileManager.default.attributesOfItem(atPath: local.path)[.posixPermissions] as? NSNumber
+        guard fallback.mode == .local, denied.mode == .local, denied.directory == local,
+              permissions?.intValue == 0o700 else {
+            throw RuntimeError.failure("Yerel depolama seçimi veya 0700 izinleri yanlış.")
+        }
+        try await checkFirstLocalFlush(directory: local)
         var stages: [String] = []
         await RuntimeTickDelivery.deliver(record: { stages.append("ledger") },
                                          forecast: { stages.append("forecast") },

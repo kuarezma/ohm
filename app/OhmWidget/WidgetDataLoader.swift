@@ -14,10 +14,12 @@ public enum WidgetDataLoader {
     }
 
     public static func loadCurrentEntry(at date: Date = Date()) -> ReceiptEntry {
-        guard let groupID = appGroupIdentifier() else {
-            return ReceiptEntry(date: date, data: nil)
+        guard let groupID = appGroupIdentifier(),
+              let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID),
+              FileManager.default.isReadableFile(atPath: container.path) else {
+            return ReceiptEntry(date: date, data: nil, storageUnavailable: true)
         }
-        let dbPath = EnergyLedger.defaultDatabasePath(appGroupIdentifier: groupID)
+        let dbPath = container.appendingPathComponent("ledger.sqlite").path
         guard FileManager.default.fileExists(atPath: dbPath) else {
             return ReceiptEntry(date: date, data: nil)
         }

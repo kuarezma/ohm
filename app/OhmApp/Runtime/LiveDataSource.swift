@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import OhmControl
+import OhmLedger
 import OhmModel
 import OhmRules
 import OSLog
@@ -29,7 +30,9 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
     private(set) var ruleVetoes: [UUID: String] = [:]
     private(set) var lastError: String?
 
-    @ObservationIgnored let ruleStore: RuleStore
+    private(set) var isLocalStorage = false
+    @ObservationIgnored private let hasInjectedRuleStore: Bool
+    @ObservationIgnored private(set) var ruleStore: RuleStore
     @ObservationIgnored private var runtime: OhmRuntime?
     @ObservationIgnored private var bridge: WorkspaceBridge?
     @ObservationIgnored private var notifier: RunawayNotifier?
@@ -43,10 +46,11 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
     @ObservationIgnored private let widgetRefresh = WidgetRefreshCoordinator()
 
     init(ruleStore: RuleStore? = nil) {
+        hasInjectedRuleStore = ruleStore != nil
         if let ruleStore {
             self.ruleStore = ruleStore
         } else {
-            let url = RuleStore.defaultRulesURL() ?? FileManager.default.temporaryDirectory.appendingPathComponent("rules.json")
+            let url = EnergyLedger.localDataDirectory().appendingPathComponent("rules.json")
             self.ruleStore = RuleStore(fileURL: url)
         }
         Self.intentSource = self
@@ -67,6 +71,11 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
             await notifier.install()
             do {
                 guard let self else { return }
+                let storage = try await RuntimeStorage.prepare()
+                self.isLocalStorage = storage.mode == .local
+                if !self.hasInjectedRuleStore {
+                    self.ruleStore = RuleStore(fileURL: storage.directory.appendingPathComponent("rules.json"))
+                }
                 let persisted = await self.ruleStore.load()
                 self.rules = persisted.rules
                 self.neverFreezeApps = persisted.neverFreeze
@@ -74,7 +83,7 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
                     self.showFailure(warning)
                     await self.ruleStore.clearCorruptWarning()
                 }
-                let runtime = try await OhmRuntime.make(source: self, ruleStore: self.ruleStore)
+                let runtime = try await OhmRuntime.make(source: self, ruleStore: self.ruleStore, storage: storage)
                 guard !self.stopping else { await runtime.shutdown(); return }
                 self.runtime = runtime
                 await runtime.setNeverFreeze(self.neverFreezeApps)

@@ -1,4 +1,5 @@
 import Foundation
+import OhmLedger
 import OhmModel
 import OhmRules
 import OSLog
@@ -41,8 +42,7 @@ public actor RuleStore {
            let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) {
             return container.appendingPathComponent("rules.json")
         }
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        return appSupport?.appendingPathComponent("Ohm/rules.json")
+        return EnergyLedger.localDataDirectory().appendingPathComponent("rules.json")
     }
 
     public func load() -> PersistedRules {
