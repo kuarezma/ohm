@@ -1,0 +1,7 @@
+"intent.ecore.title" = "Move an app to E-cores";
+"intent.application" = "App name or bundle ID";
+"intent.thaw.title" = "Thaw all";
+"intent.receipt.title" = "Today's receipt";
+"intent.ecore.short" = "Move to E-cores";
+"intent.thaw.short" = "Thaw all";
+"intent.receipt.short" = "Today's receipt";

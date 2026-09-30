@@ -1,6 +1,7 @@
 import AppKit
 import Dispatch
 import OhmForecast
+import OhmControl
 import OhmGovernor
 import OhmJournal
 import OhmLedger
@@ -93,6 +94,8 @@ actor OhmRuntime {
     private var lastVetoList: [String] = []
     private var evaluationTask: Task<Void, Never>?
     private var deadlineTask: Task<Void, Never>?
+    private var controlServer: ControlServer?
+    private var controlTop: ControlTop?
 
     private init(engine: SamplingEngine, ledger: EnergyLedger, reader: RuntimeLedgerReader,
                  governor: Governor, ruleStore: RuleStore, ruleEngine: RuleEngine,
@@ -188,6 +191,20 @@ actor OhmRuntime {
             })
         }
         await engine.start()
+        let server = ControlServer { [weak self] request in
+            guard let self else {
+                return ControlResponse(id: request.id, message: "Ohm kapanıyor.", error: ControlFailure(code: .notReady))
+            }
+            return await self.handleControl(request, origin: .cli)
+        }
+        do {
+            try await server.start()
+            if stopping { await server.stop() }
+            else { controlServer = server }
+        } catch {
+            lastError = "Kontrol soketi açılamadı: \(error.localizedDescription)"
+            Logger(subsystem: "dev.ohm", category: "control").error("listener start failed: \(String(describing: error), privacy: .public)")
+        }
         await evaluateRules()
         if !stopping, source != nil {
             Logger(subsystem: "dev.ohm", category: "runtime")
@@ -199,6 +216,7 @@ actor OhmRuntime {
         guard !stopping else { return }
         ticks += 1
         watts = tick.system.systemLoad ?? (tick.system.cpuP + tick.system.cpuE + (tick.system.gpu ?? 0))
+        controlTop = ControlRouter.top(from: tick, watts: watts)
         await RuntimeTickDelivery.deliver(record: {
             do {
                 try await ledger.record(tick)
@@ -286,6 +304,69 @@ actor OhmRuntime {
     private func publishEffects() async {
         guard !stopping else { return }
         await source?.updateEffects(await effects())
+    }
+
+    /// Both CLI and App Intents use the same Governor; intents call this directly in-process.
+    func handleControl(_ request: ControlRequest, origin: EffectOrigin) async -> ControlResponse {
+        guard !stopping, !Task.isCancelled else {
+            return ControlRouter.failure(request, code: .notReady, message: "Ohm kapanıyor.")
+        }
+        do { try request.validate() }
+        catch { return ControlRouter.failure(request, code: .invalidArguments, message: "Geçersiz kontrol isteği.") }
+        if request.operation == .top {
+            guard let controlTop else {
+                return ControlRouter.failure(request, code: .notReady, message: "İlk enerji örneği henüz hazır değil.")
+            }
+            return ControlResponse(id: request.id, message: "Son canlı örnek.", top: controlTop)
+        }
+        var targetPID: Int32?
+        let command: GovernorCommand
+        if request.operation == .thawAll {
+            command = .thawAll
+        } else {
+            guard let target = request.target else {
+                return ControlRouter.failure(request, code: .invalidArguments, message: "Uygulama veya PID belirtin.")
+            }
+            let resolution = await ControlRouter.resolve(target)
+            switch resolution {
+            case .failure(let code, let message): return ControlRouter.failure(request, code: code, message: message)
+            case .identity(let identity):
+                guard !stopping, !Task.isCancelled, ProcessProbe.matches(identity) else {
+                    return ControlRouter.failure(request, code: .notFound, message: "Süreç kimliği değişti; işlem uygulanmadı.")
+                }
+                targetPID = identity.pid
+                switch request.operation {
+                case .eCore: command = .eCore(pid: identity.pid, on: !request.off, origin: origin)
+                case .freeze: command = .freeze(pid: identity.pid, origin: origin, confirmedBackground: false)
+                case .thaw: command = .thaw(pid: identity.pid)
+                case .top, .thawAll: return ControlRouter.failure(request, code: .invalidArguments, message: "Geçersiz hedef.")
+                }
+            }
+        }
+        var response: ControlResponse
+        if request.operation == .thawAll {
+            // Consume the result of this operation, not a later snapshot of live PID lists.
+            response = ControlRouter.response(request, report: await governor.thawAll(reason: .user))
+        } else {
+            response = ControlRouter.response(request, outcome: await governor.perform(command))
+        }
+        let pending = await governor.pendingUndoPids
+        let frozen = await governor.frozenRootPids
+        let eCore = await governor.eCoreRootPids
+        if let targetPID, pending.contains(targetPID) ||
+                    (request.off && eCore.contains(targetPID)) ||
+                    (request.operation == .thaw && frozen.contains(targetPID)) {
+            response = ControlRouter.failure(request, code: .recoveryPending,
+                                             message: "Süreç etkisi henüz geri alınamadı; Ohm yeniden deniyor.")
+        }
+        await publishEffects()
+        if response.success { await source?.reloadWidget() }
+        return response
+    }
+
+    func intentReceipt() async throws -> Receipt {
+        guard !stopping else { throw RuntimeError.failure("Ohm kapanıyor.") }
+        return try await reader.today(at: Date())
     }
 
     func toggle(_ effect: Effect, for key: AppKey) async {
@@ -520,6 +601,8 @@ actor OhmRuntime {
     func shutdown() async {
         guard !stopping else { return }
         stopping = true
+        await controlServer?.stop()
+        controlServer = nil
         evaluationTask?.cancel()
         deadlineTask?.cancel()
         evaluationTask = nil

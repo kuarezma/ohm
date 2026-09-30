@@ -90,7 +90,8 @@ struct T026RegressionTests {
                            appControl: FakeAppControl(FakeAppState()), protection: FakeProtection(FakeProtectionState()),
                            signaler: T026Signaler(T026SignalState()), tree: FakeTree(TreeState()), probes: FakeProbes(ProbeState()))
         #expect(await gov.disabledReason == .recoveryPending)
-        #expect(await gov.perform(.thawAll) == .thawed(groups: 1))
+        // Tracking is closed, but unknown identity never proves that the effect was undone.
+        #expect(await gov.perform(.thawAll) == .vetoed([.recoveryPending]))
         #expect(await gov.disabledReason == nil)
         let snapshot = JournalReader.read(path: paths.journal)
         #expect(snapshot.openGroups().isEmpty)

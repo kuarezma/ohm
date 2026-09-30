@@ -72,6 +72,7 @@ targets:
       - target: ohm-cli
         embed: true
         link: false
+        codeSign: true
         copy:
           destination: wrapper
           subpath: Contents/Helpers
@@ -118,6 +119,9 @@ targets:
     settings:
       base:
         PRODUCT_NAME: ohm
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ohm.cli
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: ohm/ohm.entitlements
     dependencies:
       - package: OhmCore
         product: OhmModel

@@ -265,6 +265,9 @@ public actor Governor: Governing {
                 ?? .eCoreApplied(group: lane.group(root: pid)?.id ?? UUID())
         case .thawAll:
             let r = thawAll(reason: .user)
+            guard r.recoveryComplete else {
+                return .vetoed([disabledReason == .journalUnwritable ? .journalUnwritable : .recoveryPending])
+            }
             return .thawed(groups: r.freezeGroups)
         }
     }
@@ -281,6 +284,10 @@ public actor Governor: Governing {
             // Active groups are undone first. Recovery can now inspect the entire journal safely.
             do {
                 if let recovered = try journal?.retryRecovery(forceCloseUnverifiable: true) {
+                    report.forcedClosedGroups = recovered.forcedClosedGroups.count
+                    if recovered.blocksEffects {
+                        report.recoveryFailures.append("Journal kurtarmasında doğrulanamayan veya geri alınamayan süreçler kaldı.")
+                    }
                     for (id, kind) in recovered.closedGroups where !knownGroups.contains(id) {
                         switch kind {
                         case .freeze: report.freezeGroups += 1
@@ -296,8 +303,25 @@ public actor Governor: Governing {
                     resetRetryIfIdle()
                     updateRecoveryVeto(recovered)
                 }
-            } catch { disableEffects() }
+            } catch {
+                report.recoveryFailures.append("Journal kurtarması başarısız: \(error).")
+                report.forcedClosedGroups = journal?.recoveryReport?.forcedClosedGroups.count ?? 0
+                disableEffects()
+            }
         }
+        if report.forcedClosedGroups > 0 {
+            report.recoveryFailures.append("\(report.forcedClosedGroups) grubun kimliği doğrulanamadı; sinyal gönderilmeden yalnız kayıtları kapatıldı.")
+        }
+        if !pendingUndo.isEmpty || !groups.isEmpty ||
+            ((withECore.contains(reason) || reason == .user) && !lane.groups.isEmpty) {
+            report.recoveryFailures.append("Bazı süreç etkileri henüz geri alınamadı; Ohm yeniden deniyor.")
+        }
+        if disabledReason == .journalUnwritable {
+            report.recoveryFailures.append("Journal yazılamıyor; kurtarmanın kalıcı olarak tamamlandığı doğrulanamadı.")
+        } else if journal?.boot == nil {
+            report.recoveryFailures.append("Önyükleme oturumu doğrulanamadı; kurtarma tamamlanmadı.")
+        }
+        report.recoveryComplete = report.recoveryFailures.isEmpty
         return report
     }
 
