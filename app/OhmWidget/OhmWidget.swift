@@ -4,29 +4,50 @@ import OhmModel
 import OhmLedger
 
 struct Provider: TimelineProvider {
-    func placeholder(in context: Context) -> SimpleEntry {
-        SimpleEntry(date: Date())
+    typealias Entry = ReceiptEntry
+
+    func placeholder(in context: Context) -> ReceiptEntry {
+        ReceiptEntry.placeholder
     }
 
-    func getSnapshot(in context: Context, completion: @escaping (SimpleEntry) -> Void) {
-        completion(SimpleEntry(date: Date()))
+    func getSnapshot(in context: Context, completion: @escaping (ReceiptEntry) -> Void) {
+        if context.isPreview {
+            completion(ReceiptEntry.previewSample)
+            return
+        }
+        let entry = WidgetDataLoader.loadCurrentEntry()
+        completion(entry)
     }
 
-    func getTimeline(in context: Context, completion: @escaping (Timeline<SimpleEntry>) -> Void) {
-        let timeline = Timeline(entries: [SimpleEntry(date: Date())], policy: .atEnd)
+    func getTimeline(in context: Context, completion: @escaping (Timeline<ReceiptEntry>) -> Void) {
+        let entry = WidgetDataLoader.loadCurrentEntry()
+        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: entry.date)
+            ?? entry.date.addingTimeInterval(900)
+        let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
         completion(timeline)
     }
 }
 
-struct SimpleEntry: TimelineEntry {
-    let date: Date
-}
-
 struct OhmWidgetEntryView: View {
     var entry: Provider.Entry
+    @Environment(\.widgetFamily) private var family
 
     var body: some View {
-        Text("Today's receipt")
+        Group {
+            if let data = entry.data, data.hasData, !data.topApps.isEmpty {
+                switch family {
+                case .systemMedium:
+                    WidgetMediumView(data: data)
+                default:
+                    WidgetSmallView(data: data)
+                }
+            } else {
+                WidgetEmptyView()
+            }
+        }
+        .containerBackground(for: .widget) {
+            Color(nsColor: .windowBackgroundColor)
+        }
     }
 }
 
@@ -38,7 +59,38 @@ struct OhmWidget: Widget {
         StaticConfiguration(kind: kind, provider: Provider()) { entry in
             OhmWidgetEntryView(entry: entry)
         }
-        .configurationDisplayName("Today's receipt")
-        .description("Today's receipt")
+        .configurationDisplayName(LocalizedStringResource("Today's receipt", defaultValue: "Today's receipt"))
+        .description(LocalizedStringResource("Daily battery receipt from Ohm", defaultValue: "Daily battery receipt from Ohm"))
+        .supportedFamilies([.systemSmall, .systemMedium])
     }
+}
+
+#Preview("Small - Light", as: .systemSmall) {
+    OhmWidget()
+} timeline: {
+    ReceiptEntry.previewSample
+}
+
+#Preview("Small - Dark", as: .systemSmall) {
+    OhmWidget()
+} timeline: {
+    ReceiptEntry.previewSample
+}
+
+#Preview("Medium - Light", as: .systemMedium) {
+    OhmWidget()
+} timeline: {
+    ReceiptEntry.previewSample
+}
+
+#Preview("Medium - Dark", as: .systemMedium) {
+    OhmWidget()
+} timeline: {
+    ReceiptEntry.previewSample
+}
+
+#Preview("Small - Empty", as: .systemSmall) {
+    OhmWidget()
+} timeline: {
+    ReceiptEntry.empty
 }
