@@ -78,9 +78,10 @@ struct OhmApp: App {
                 let runtime = try await OhmRuntime.make(source: nil, smoke: true, rulesFile: rulesFile)
                 await runtime.start(workspace: bridge.events)
                 try await Task.sleep(for: .seconds(seconds))
+                let report = try await runtime.smokeReport()
                 bridge.stop()
                 await runtime.shutdown()
-                let data = try JSONEncoder().encode(await runtime.smokeReport())
+                let data = try JSONEncoder().encode(report)
                 guard let json = String(data: data, encoding: .utf8) else {
                     Self.fail("Smoke JSON çıktısı oluşturulamadı.")
                 }

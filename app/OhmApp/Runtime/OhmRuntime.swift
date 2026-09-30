@@ -27,6 +27,8 @@ struct RuntimeSmokeReport: Sendable, Encodable {
     let rules: Int
     let rulesActive: Int
     let lastDesired: String
+    let applied: [String]
+    let vetoes: [String]
 }
 
 /// Kept separate from the main actor and from the cooperative executor for SQLite reads.
@@ -88,6 +90,7 @@ actor OhmRuntime {
     private var lastEvaluation: RuleEvaluation?
     private var lastDesiredState = DesiredState()
     private var ruleVetoes: [UUID: String] = [:]
+    private var lastVetoList: [String] = []
     private var evaluationTask: Task<Void, Never>?
     private var deadlineTask: Task<Void, Never>?
 
@@ -444,9 +447,13 @@ actor OhmRuntime {
         let report = await governor.reconcile(evaluation.desiredState)
 
         var newRuleVetoes: [UUID: String] = [:]
-        for (appKey, outcome) in report.outcomes {
+        var newVetoList: [String] = []
+        for (appKey, outcome) in report.outcomes.sorted(by: { $0.key.value < $1.key.value }) {
             if case .vetoed(let reasons) = outcome {
-                let msg = reasons.map(LiveDataSource.vetoMessage).joined(separator: ", ")
+                var seen = Set<String>()
+                let uniqueReasons = reasons.map(LiveDataSource.vetoMessage).filter { seen.insert($0).inserted }
+                let msg = uniqueReasons.joined(separator: ", ")
+                newVetoList.append("\(appKey.value):\(msg)")
                 if let effect = evaluation.desiredState.effects[appKey] {
                     for (_, origins) in effect.origins {
                         for origin in origins {
@@ -459,6 +466,7 @@ actor OhmRuntime {
             }
         }
         ruleVetoes = newRuleVetoes
+        lastVetoList = newVetoList
         await source?.updateRuleVetoes(newRuleVetoes)
         await publishEffects()
     }
@@ -532,6 +540,29 @@ actor OhmRuntime {
         let currentRules = await ruleStore.rules
         let activeCount = currentRules.filter { lastEvaluation?.ruleStates[$0.id] == .active }.count
         let desiredStr = Self.formatDesired(lastDesiredState)
+
+        var appliedList: [String] = []
+        let eCoreRoots = await governor.eCoreRootPids
+        for root in eCoreRoots {
+            let members = await governor.eCoreMembers(root: root) ?? [root]
+            let bundle: String
+            if let app = applications.first(where: { $0.identity.pid == root }) {
+                bundle = app.key.value
+            } else if let vis = visibility.apps.first(where: { $0.value.processes.contains { $0.pid == root } }) {
+                bundle = vis.key.value
+            } else if let ra = NSRunningApplication(processIdentifier: root), let bid = ra.bundleIdentifier {
+                bundle = bid
+            } else {
+                bundle = "pid-\(root)"
+            }
+            for pid in members {
+                let prio = getpriority(PRIO_DARWIN_PROCESS, id_t(pid))
+                let bg = prio != 0 ? 1 : 0
+                appliedList.append("\(bundle)=eCore pid=\(pid) bg=\(bg)")
+            }
+        }
+        appliedList.sort()
+
         return RuntimeSmokeReport(
             ticks: ticks,
             ledgerMinuteRows: try await reader.minuteRows(since: startedAt, until: Date()),
@@ -540,7 +571,9 @@ actor OhmRuntime {
             protection: await governor.protectionMode.rawValue,
             rules: currentRules.count,
             rulesActive: activeCount,
-            lastDesired: desiredStr
+            lastDesired: desiredStr,
+            applied: appliedList,
+            vetoes: lastVetoList
         )
     }
 }
@@ -701,7 +734,7 @@ extension OhmRuntime {
         }
 
         // NL .ready -> disabled kayıt testi (ADR 0003: kullanıcı arayüzden açar)
-        var nlRule = Rule(name: "NL Kuralı", enabled: true, source: .naturalLanguage(text: "TextEdit E-core"),
+        let nlRule = Rule(name: "NL Kuralı", enabled: true, source: .naturalLanguage(text: "TextEdit E-core"),
                           when: .always, targets: .apps([AppRef(bundleID: "com.apple.TextEdit", displayName: "TextEdit")]),
                           actions: [.eCore()])
         let draft = RuleDraft.ready(nlRule)
