@@ -83,9 +83,17 @@ public struct ReconcileReport: Sendable, Equatable {
 public struct ThawReport: Sendable, Equatable {
     public var freezeGroups: Int
     public var eCoreGroups: Int
-    public init(freezeGroups: Int = 0, eCoreGroups: Int = 0) {
+    /// True only when undo and durable recovery completed without unverifiable forced closure.
+    public var recoveryComplete: Bool
+    public var recoveryFailures: [String]
+    public var forcedClosedGroups: Int
+    public init(freezeGroups: Int = 0, eCoreGroups: Int = 0, recoveryComplete: Bool = true,
+                recoveryFailures: [String] = [], forcedClosedGroups: Int = 0) {
         self.freezeGroups = freezeGroups
         self.eCoreGroups = eCoreGroups
+        self.recoveryComplete = recoveryComplete
+        self.recoveryFailures = recoveryFailures
+        self.forcedClosedGroups = forcedClosedGroups
     }
 }
 

@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import OhmControl
 import OhmModel
 import OhmRules
 import OSLog
@@ -14,6 +15,7 @@ private enum LiveAction: Sendable {
 @MainActor
 @Observable
 final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
+    private(set) static weak var intentSource: LiveDataSource?
     private(set) var systemPower = SystemPower(cpuP: 0, cpuE: 0)
     private(set) var batteryState = BatteryState(source: .unknown, percent: 0, voltage_mV: 0, amperage_mA: 0)
     private(set) var batteryForecastMinutes: Double?
@@ -38,6 +40,7 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
     @ObservationIgnored private var stopping = false
     @ObservationIgnored private var interactive = false
     @ObservationIgnored private var failureAlert: NSAlert?
+    @ObservationIgnored private let widgetRefresh = WidgetRefreshCoordinator()
 
     init(ruleStore: RuleStore? = nil) {
         if let ruleStore {
@@ -46,6 +49,7 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
             let url = RuleStore.defaultRulesURL() ?? FileManager.default.temporaryDirectory.appendingPathComponent("rules.json")
             self.ruleStore = RuleStore(fileURL: url)
         }
+        Self.intentSource = self
     }
 
     func start() {
@@ -85,6 +89,7 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
                         case .neverFreeze(let names): await runtime.setNeverFreeze(names)
                         case .rules(let newRules): await runtime.setRules(newRules)
                         }
+                        self?.reloadWidget()
                     }
                 }
             } catch {
@@ -103,6 +108,8 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
 
     func shutdown() async {
         stopping = true
+        widgetRefresh.stop()
+        if Self.intentSource === self { Self.intentSource = nil }
         failureAlert?.window.close()
         failureAlert = nil
         bridge?.stop()
@@ -121,6 +128,7 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
 
     func apply(_ snapshot: DashboardSnapshot, events: [RunawayEvent]) async {
         guard !stopping else { return }
+        widgetRefresh.observe(snapshot.tick.wallClock)
         systemPower = snapshot.tick.system
         batteryState = snapshot.tick.battery
         batteryForecastMinutes = snapshot.forecastMinutes
@@ -147,6 +155,25 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
     }
 
     func updateEffects(_ effects: [AppKey: Effect]) { activeEffects = effects }
+
+    func reloadWidget() { if !stopping { widgetRefresh.request() } }
+
+    private func intentRuntime() async throws -> OhmRuntime {
+        start()
+        await startup?.value
+        guard !stopping, let runtime else { throw RuntimeError.failure(lastError ?? "Ohm henüz hazır değil.") }
+        return runtime
+    }
+
+    func performIntent(_ request: ControlRequest) async throws -> ControlResponse {
+        let runtime = try await intentRuntime()
+        return await runtime.handleControl(request, origin: .manual)
+    }
+
+    func intentReceipt() async throws -> Receipt {
+        let runtime = try await intentRuntime()
+        return try await runtime.intentReceipt()
+    }
 
     func updateRuleVetoes(_ vetoes: [UUID: String]) { ruleVetoes = vetoes }
 

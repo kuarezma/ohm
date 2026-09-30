@@ -81,6 +81,11 @@ let package = Package(
             dependencies: ["OhmModel"]
         ),
         .testTarget(
+            name: "OhmControlTests",
+            dependencies: ["OhmControl", "OhmModel"],
+            exclude: ["Scripts"]
+        ),
+        .testTarget(
             name: "OhmSamplingTests",
             dependencies: ["OhmSampling", "OhmModel", "OhmLedger"]
         ),
