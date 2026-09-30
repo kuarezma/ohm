@@ -26,7 +26,7 @@ Her görevin model seçimi ve gerekçesi `Docs/PLAN.md` § "Görev tablosu"ndad�
 | T-030 | SwiftUI popover, halka, Settings, onboarding | Gemini 3.8 Flash high | AG 🔴3 | T-021 | DONE | Preview görüntüleri, açık/koyu, VoiceOver |
 | T-031 | RuleEngine ve kural arayüzü | Gemini 3.8 Flash high | AG 🔴3 | T-001 | DONE | Kural testleri yeşil |
 | T-032 | RunawayDetector ve bildirimler | GPT-6.1 Sol medium | Codex 🟡2 | T-021 | DONE | Sahte yükte tetiklenir |
-| T-033 | Widget, App Intents, `ohm` CLI | Gemini 3.8 Flash high | AG 🔴3 | T-022 | TODO | `ohm receipt --today` çıktısı |
+| T-033 | Widget (T-033b), App Intents + `ohm` CLI + kontrol soketi (T-033a) | Gemini high / GPT-6.1 Sol high | AG 🔴3 / Codex 🟠3 | T-022 | DONE | `ohm receipt --today` çıktısı |
 | T-034 | `OhmRuntime` kompozisyon kökü: örnekleme → ledger → tahmin → kaçak dedektörü → UI (ADR 0001 §2) | GPT-6.1 Sol high | Codex 🟠3 | T-029, T-032 | DONE | `--runtime-smoke 90`: ticks>0, ledger satırı, watt>0; kill -9 testi |
 | T-035 | Kural motoru + NL kural ekleme uygulamaya bağlı (RuleEngine bağlam olayları → DesiredState → Governor) | GPT-6.1 Sol medium | Codex 🟡2 | T-034 | DONE | Kural oluştur/aç/kapat canlı çalışır |
 | T-040 | Doğal dilde kural (FoundationModels) | Gemini 3.8 Flash high | AG 🔴3 | T-031 | DONE | 20 cümlede ≥18 doğru |
