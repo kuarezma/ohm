@@ -92,9 +92,11 @@ public actor EnergyLedger: EnergyLedgerWriting {
         }
     }
 
-    public static func defaultDatabasePath() -> String {
-        let appGroup = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.dev.ohm")
-        if let appGroup = appGroup {
+    /// `appGroupIdentifier` is the signed, team-prefixed group (`<TEAM>.dev.ohm`); callers read it from
+    /// their own entitlements (see OhmRuntime.appGroupIdentifier). Without it the ledger is process-local.
+    public static func defaultDatabasePath(appGroupIdentifier: String? = nil) -> String {
+        if let id = appGroupIdentifier,
+           let appGroup = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: id) {
             return appGroup.appendingPathComponent("ledger.sqlite").path
         }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
