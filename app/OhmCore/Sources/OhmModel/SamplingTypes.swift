@@ -110,6 +110,15 @@ public struct SystemPower: Sendable, Equatable {
     public var systemSource: SystemEnergySource
     /// IOReport's own measurement interval for `gpu` (awake time); GPU energy = gpu × gpuInterval.
     public var gpuInterval: Duration?
+    /// Coalesced measurements: joules and measured awake coverage, independent of latest battery.
+    /// nil preserves the legacy full-interval/fallback semantics.
+    public var systemLoadCoverage: Duration? = nil
+    public var batteryVICoverage: Duration? = nil
+    public var systemLoadEnergyJ: Double? = nil
+    public var batteryVIEnergyJ: Double? = nil
+    public var effectiveEnergyJ: Double? = nil
+    public var effectiveCoverage: Duration? = nil
+    public var effectiveVICoverage: Duration? = nil
 
     public init(
         cpuP: Double,

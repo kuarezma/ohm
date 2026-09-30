@@ -191,27 +191,55 @@ public actor EnergyLedger: EnergyLedgerWriting {
             var bucket = memoryBuckets[key] ?? MinuteBucket()
             let ms = Int(part.end - part.start)
             bucket.coveredMs = min(60_000, bucket.coveredMs + ms)
-            let measuredLoad = tick.system.systemSource == .systemLoad ? tick.system.systemLoad : nil
-            let load = measuredLoad ?? tick.battery.systemLoad_mW.map { Double($0) / 1000 }
-            if let load {
-                let energy = Self.portion(Int64(load * Double(durationMs) * 1000), part: part, start: startMs, duration: durationMs)
-                bucket.sysloadUj = (bucket.sysloadUj ?? 0) + energy
-                bucket.sysloadCovMs += ms
-                bucket.effectiveUj = (bucket.effectiveUj ?? 0) + energy
-                bucket.effectiveCovMs += ms
-            }
-            let discharging = tick.battery.source == .battery && !tick.battery.isCharging
-            if discharging {
-                let vi = tick.system.systemSource == .batteryVI ? tick.system.systemLoad : nil
-                let watts = vi ?? Double(tick.battery.voltage_mV) * Double(abs(tick.battery.amperage_mA)) / 1_000_000
-                let energy = Self.portion(Int64(watts * Double(durationMs) * 1000), part: part, start: startMs, duration: durationMs)
-                bucket.battViUj = (bucket.battViUj ?? 0) + energy
-                bucket.battViCovMs += ms
-                if load == nil {
+            let measuredCoverage: Int64
+            if let coverage = tick.system.effectiveCoverage {
+                // Coalesced energy and coverage are independent; never infer them from latest battery.
+                measuredCoverage = Self.milliseconds(coverage)
+                func energyPart(_ joules: Double?) -> Int64? {
+                    joules.map { Self.portion(Int64(($0 * 1_000_000).rounded()), part: part,
+                                             start: startMs, duration: durationMs) }
+                }
+                func coveragePart(_ duration: Duration?) -> Int {
+                    Int(Self.portion(Self.milliseconds(duration ?? .zero), part: part,
+                                     start: startMs, duration: durationMs))
+                }
+                if let energy = energyPart(tick.system.systemLoadEnergyJ) {
+                    bucket.sysloadUj = (bucket.sysloadUj ?? 0) + energy
+                }
+                bucket.sysloadCovMs += coveragePart(tick.system.systemLoadCoverage)
+                if let energy = energyPart(tick.system.batteryVIEnergyJ) {
+                    bucket.battViUj = (bucket.battViUj ?? 0) + energy
+                }
+                bucket.battViCovMs += coveragePart(tick.system.batteryVICoverage)
+                if let energy = energyPart(tick.system.effectiveEnergyJ) {
+                    bucket.effectiveUj = (bucket.effectiveUj ?? 0) + energy
+                }
+                bucket.effectiveCovMs += coveragePart(coverage)
+                bucket.effectiveViMs += coveragePart(tick.system.effectiveVICoverage)
+            } else {
+                let measuredLoad = tick.system.systemSource == .systemLoad ? tick.system.systemLoad : nil
+                let load = measuredLoad ?? tick.battery.systemLoad_mW.map { Double($0) / 1000 }
+                if let load {
+                    let energy = Self.portion(Int64(load * Double(durationMs) * 1000), part: part, start: startMs, duration: durationMs)
+                    bucket.sysloadUj = (bucket.sysloadUj ?? 0) + energy
+                    bucket.sysloadCovMs += ms
                     bucket.effectiveUj = (bucket.effectiveUj ?? 0) + energy
                     bucket.effectiveCovMs += ms
-                    bucket.effectiveViMs += ms
                 }
+                let discharging = tick.battery.source == .battery && !tick.battery.isCharging
+                if discharging {
+                    let vi = tick.system.systemSource == .batteryVI ? tick.system.systemLoad : nil
+                    let watts = vi ?? Double(tick.battery.voltage_mV) * Double(abs(tick.battery.amperage_mA)) / 1_000_000
+                    let energy = Self.portion(Int64(watts * Double(durationMs) * 1000), part: part, start: startMs, duration: durationMs)
+                    bucket.battViUj = (bucket.battViUj ?? 0) + energy
+                    bucket.battViCovMs += ms
+                    if load == nil {
+                        bucket.effectiveUj = (bucket.effectiveUj ?? 0) + energy
+                        bucket.effectiveCovMs += ms
+                        bucket.effectiveViMs += ms
+                    }
+                }
+                measuredCoverage = load != nil || discharging ? durationMs : 0
             }
             bucket.readableCount = tick.unreadable.readableCount
             bucket.unreadableCount = tick.unreadable.unreadableCount
@@ -226,7 +254,11 @@ public actor EnergyLedger: EnergyLedgerWriting {
                     category: process.category, lastSeen: endMs / 1000)
                 let energyUj = Self.portion(Int64(process.energy_nJ / 1000), part: part, start: startMs, duration: durationMs)
                 acc.energyUj += energyUj
-                if load != nil || discharging { bucket.attributedCoveredUj += energyUj }
+                let totalEnergyUj = Int64(process.energy_nJ / 1000)
+                let coveredEnergy = measuredCoverage == durationMs ? totalEnergyUj
+                    : Int64(Double(totalEnergyUj) * Double(measuredCoverage) / Double(durationMs))
+                bucket.attributedCoveredUj += Self.portion(coveredEnergy, part: part,
+                                                          start: startMs, duration: durationMs)
                 acc.pEnergyUj += Self.portion(Int64(process.pEnergy_nJ / 1000), part: part, start: startMs, duration: durationMs)
                 acc.cpuMs += Self.portion(Int64(process.cpuTime_ns / 1_000_000), part: part, start: startMs, duration: durationMs)
                 acc.lastSeen = max(acc.lastSeen, endMs / 1000)

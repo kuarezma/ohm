@@ -39,7 +39,8 @@ public actor SamplingEngine: SamplingEngineProtocol {
     public nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
 
     public nonisolated let ticks: AsyncStream<SampleTick>
-    private let continuation: AsyncStream<SampleTick>.Continuation
+    private let tickBuffer: TickBuffer
+    public var pendingTickCount: Int { tickBuffer.count }
 
     private let process: any ProcessEnergySampling
     private let component: any ComponentSampling
@@ -73,7 +74,8 @@ public actor SamplingEngine: SamplingEngineProtocol {
                 battery: sending any BatterySampling,
                 thermal: @escaping @Sendable () -> ThermalLevel = ThermalSampler.current,
                 cadence: SamplingCadence = .ambient,
-                clocks: SamplingClocks = .system) {
+                clocks: SamplingClocks = .system,
+                pendingTickLimit: Int = 4) {
         queue = DispatchSerialQueue(label: "dev.ohm.sampling", qos: .utility)
         self.process = process
         self.component = component
@@ -82,7 +84,9 @@ public actor SamplingEngine: SamplingEngineProtocol {
         self.thermal = thermal
         self.clocks = clocks
         self.cadence = cadence
-        (ticks, continuation) = AsyncStream.makeStream(of: SampleTick.self, bufferingPolicy: .unbounded)
+        let buffer = TickBuffer(capacity: pendingTickLimit)
+        tickBuffer = buffer
+        ticks = AsyncStream(unfolding: { await buffer.next() })
     }
 
     /// Production composition: IOReport when available, otherwise `NullComponentSampler`.
@@ -94,7 +98,7 @@ public actor SamplingEngine: SamplingEngineProtocol {
     deinit {
         loop?.cancel()
         sleeper?.cancel()
-        continuation.finish()
+        tickBuffer.finish()
     }
 
     // MARK: Control
@@ -146,7 +150,7 @@ public actor SamplingEngine: SamplingEngineProtocol {
                                  unreadable: unreadable, component: parts, systemLoad: load,
                                  battery: slowReading.battery, thermal: thermal())
         tickCount += 1
-        continuation.yield(tick)
+        tickBuffer.offer(tick)
         return tick
     }
 
