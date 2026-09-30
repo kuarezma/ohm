@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # scripts/ci/release.sh — Ohm Release paketleme ve notarization betiği
 # Kapsam: Release derlemesi, Developer ID imzalama, notarization, stapling ve zip paketleme.
-# --dry-run: Açılmış entitlement ile ad-hoc Release, zip, SHA-256, sürüm ve entitlement doğrulaması;
-#            notarytool/Developer ID imza adımlarını yazdırır.
+# Modlar:
+#   signed:    5 secret tanımlı → Developer ID imzalama, notarization, stapling, Ohm-<v>.zip
+#   preview:   secret yok → ad-hoc / yerel Developer Team imza, FIRST-RUN.md ile Ohm-<v>-preview.zip
+#   --dry-run: Açılmış entitlement ile ad-hoc Release, zip, SHA-256, sürüm ve entitlement doğrulaması;
+#              notarytool/Developer ID imza adımlarını simüle eder.
 
 set -euo pipefail
 
@@ -40,7 +43,34 @@ if [ -z "$TEAM_ID" ]; then
   TEAM_ID="3J22LGMHJ9"
 fi
 
-echo "=== Ohm Release Paketleme (Sürüm: ${VERSION}, Team: ${TEAM_ID}) ==="
+# Mod belirleme (signed vs preview vs dry-run)
+IS_SIGNED=false
+if [ -n "${DEVELOPER_ID_CERT_P12_BASE64:-}" ] && [ -n "${DEVELOPER_ID_CERT_PASSWORD:-}" ] && \
+   [ -n "${NOTARY_APPLE_ID:-}" ] && [ -n "${NOTARY_TEAM_ID:-}" ] && [ -n "${NOTARY_APP_PASSWORD:-}" ]; then
+  IS_SIGNED=true
+fi
+
+if [ "$DRY_RUN" = true ]; then
+  PACKAGE_MODE="dry-run"
+  ZIP_NAME="Ohm-${VERSION}.zip"
+  SHA256_NAME="Ohm-${VERSION}.sha256"
+elif [ "$IS_SIGNED" = true ]; then
+  PACKAGE_MODE="signed"
+  ZIP_NAME="Ohm-${VERSION}.zip"
+  SHA256_NAME="Ohm-${VERSION}.sha256"
+else
+  PACKAGE_MODE="preview"
+  ZIP_NAME="Ohm-${VERSION}-preview.zip"
+  SHA256_NAME="Ohm-${VERSION}-preview.sha256"
+fi
+
+DERIVED_DATA="$BUILD_DIR/DerivedDataRelease"
+APP_PATH="$DERIVED_DATA/Build/Products/Release/Ohm.app"
+ZIP_PATH="$BUILD_DIR/$ZIP_NAME"
+SHA256_PATH="$BUILD_DIR/$SHA256_NAME"
+ZIP_SHA256_PATH="$BUILD_DIR/${ZIP_NAME}.sha256"
+
+echo "=== Ohm Release Paketleme (Mod: ${PACKAGE_MODE}, Sürüm: ${VERSION}, Team: ${TEAM_ID}) ==="
 
 # [1/5] XcodeGen ile projeyi güncelle
 echo "==> [1/5] Generating Xcode project with xcodegen..."
@@ -49,12 +79,6 @@ if ! command -v xcodegen >/dev/null 2>&1; then
   exit 1
 fi
 (cd "$REPO_ROOT/app" && xcodegen generate)
-
-DERIVED_DATA="$BUILD_DIR/DerivedDataRelease"
-APP_PATH="$DERIVED_DATA/Build/Products/Release/Ohm.app"
-ZIP_PATH="$BUILD_DIR/Ohm-${VERSION}.zip"
-SHA256_PATH="$BUILD_DIR/Ohm-${VERSION}.sha256"
-ZIP_SHA256_PATH="$BUILD_DIR/Ohm-${VERSION}.zip.sha256"
 
 # Rev 1 Point 1: Entitlement açılımı ($(TeamIdentifierPrefix) -> <TEAM>.)
 EXPANDED_APP_ENTITLEMENTS="$BUILD_DIR/Ohm.expanded.entitlements"
@@ -92,7 +116,7 @@ xcodebuild -project "$REPO_ROOT/app/Ohm.xcodeproj" \
   CODE_SIGN_IDENTITY="" \
   build
 
-if [ "$DRY_RUN" = true ]; then
+if [ "$PACKAGE_MODE" = "dry-run" ]; then
   # Rev 1 Point 5: Dry-run'da da açılmış entitlement ile içten dışa ad-hoc imzala
   echo "==> [3/5] Dry-run: Açılmış entitlement ile ad-hoc imzalama yapılıyor..."
   if [ -d "$APP_PATH/Contents/PlugIns/OhmWidget.appex" ]; then
@@ -137,16 +161,59 @@ if [ "$DRY_RUN" = true ]; then
   echo "    [dry-run] xcrun notarytool submit \"$ZIP_PATH\" --keychain-profile ohm-ci --keychain \"\$KEYCHAIN_PATH\" --wait"
   echo "    [dry-run] xcrun stapler staple \"$APP_PATH\""
 
-else
-  # Canlı release modu: Secrets kontrolü
-  echo "==> [2/5] Canlı Release modu: Kimlik bilgileri kontrol ediliyor..."
-  if [ -z "${DEVELOPER_ID_CERT_P12_BASE64:-}" ] || [ -z "${DEVELOPER_ID_CERT_PASSWORD:-}" ] || \
-     [ -z "${NOTARY_APPLE_ID:-}" ] || [ -z "${NOTARY_TEAM_ID:-}" ] || [ -z "${NOTARY_APP_PASSWORD:-}" ]; then
-    echo "Notice: Developer ID certificate or notarization credentials are not set."
-    echo "Skipping Developer ID signing and notarization (secrets yoksa açık mesajla atla)."
-    echo "Run with --dry-run for local/uncredentialed release packaging."
-    exit 0
+elif [ "$PACKAGE_MODE" = "preview" ]; then
+  # Preview release modu: Developer ID secrets yok, önizleme sürümü paketlenir
+  echo "==> [3/5] Preview modu: Developer ID ve notarization kimlik bilgileri tanımlı değil."
+  echo "    Önizleme sürümü paketleniyor..."
+
+  LOCAL_DEV_IDENTITY=""
+  if command -v security >/dev/null 2>&1; then
+    LOCAL_DEV_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep -E "Apple Development" | head -n1 | awk '{print $2}' || true)
   fi
+  PREVIEW_SIGN_IDENTITY="${PREVIEW_SIGN_IDENTITY:-${LOCAL_DEV_IDENTITY:--}}"
+
+  if [ "$PREVIEW_SIGN_IDENTITY" != "-" ]; then
+    echo "    İmzalama: Yerel Apple Development kimliği (${PREVIEW_SIGN_IDENTITY}) kullanılıyor."
+  else
+    echo "    İmzalama: Ad-hoc imza (codesign --sign -) kullanılıyor."
+  fi
+
+  # İçten dışa imzalama (--options runtime ve açılmış entitlement'lar ile)
+  if [ -d "$APP_PATH/Contents/PlugIns/OhmWidget.appex" ]; then
+    codesign --force --options runtime \
+      --entitlements "$EXPANDED_WIDGET_ENTITLEMENTS" \
+      --sign "$PREVIEW_SIGN_IDENTITY" "$APP_PATH/Contents/PlugIns/OhmWidget.appex"
+  fi
+  if [ -f "$APP_PATH/Contents/Helpers/ohm" ]; then
+    codesign --force --options runtime \
+      --sign "$PREVIEW_SIGN_IDENTITY" "$APP_PATH/Contents/Helpers/ohm"
+  fi
+  if [ -f "$APP_PATH/Contents/MacOS/ohm-thawd" ]; then
+    codesign --force --options runtime \
+      --sign "$PREVIEW_SIGN_IDENTITY" "$APP_PATH/Contents/MacOS/ohm-thawd"
+  fi
+  codesign --force --options runtime \
+    --entitlements "$EXPANDED_APP_ENTITLEMENTS" \
+    --sign "$PREVIEW_SIGN_IDENTITY" "$APP_PATH"
+
+  echo "==> Verifying signature and entitlements..."
+  codesign --verify --verbose=2 "$APP_PATH"
+
+  if ! codesign -d --entitlements - --xml "$APP_PATH" 2>&1 | grep -q "${TEAM_ID}\.dev\.ohm"; then
+    echo "Error: Entitlement verification failed: ${TEAM_ID}.dev.ohm not found in Ohm.app" >&2
+    exit 1
+  fi
+  if ! codesign -d --entitlements - --xml "$APP_PATH/Contents/PlugIns/OhmWidget.appex" 2>&1 | grep -q "${TEAM_ID}\.dev\.ohm"; then
+    echo "Error: Entitlement verification failed: ${TEAM_ID}.dev.ohm not found in OhmWidget.appex" >&2
+    exit 1
+  fi
+  echo "    ✔ Entitlements verified: ${TEAM_ID}.dev.ohm present in preview bundle."
+
+  echo "==> [4/5] Preview modu: Notarization atlandı (ücretsiz hesap / Personal Team)."
+
+else
+  # Canlı signed release modu: Developer ID ve Notarization
+  echo "==> [2/5b] Canlı Signed Release modu: Sertifika ve kimlik bilgileri yükleniyor..."
 
   # Geçici anahtarlık oluştur ve sertifikayı içe aktar
   KEYCHAIN_PATH="$(mktemp -t ohm-build.XXXXXX).keychain-db"
@@ -229,21 +296,49 @@ fi
 # [5/5] Zip arşivi ve SHA-256 oluşturma
 echo "==> [5/5] Creating release zip archive and SHA-256 checksum..."
 rm -f "$ZIP_PATH" "$SHA256_PATH" "$ZIP_SHA256_PATH"
-ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+
+if [ "$PACKAGE_MODE" = "preview" ]; then
+  FIRST_RUN_SRC="$REPO_ROOT/packaging/preview/FIRST-RUN.md"
+  if [ ! -f "$FIRST_RUN_SRC" ]; then
+    echo "Error: $FIRST_RUN_SRC not found." >&2
+    exit 1
+  fi
+  PREVIEW_STAGE="$BUILD_DIR/preview_stage"
+  rm -rf "$PREVIEW_STAGE"
+  mkdir -p "$PREVIEW_STAGE"
+  cp -R "$APP_PATH" "$PREVIEW_STAGE/Ohm.app"
+  cp "$FIRST_RUN_SRC" "$PREVIEW_STAGE/FIRST-RUN.md"
+  if [ -f "$REPO_ROOT/packaging/preview/FIRST-RUN.tr.md" ]; then
+    cp "$REPO_ROOT/packaging/preview/FIRST-RUN.tr.md" "$PREVIEW_STAGE/FIRST-RUN.tr.md"
+  fi
+  (cd "$PREVIEW_STAGE" && ditto -c -k . "$ZIP_PATH")
+  rm -rf "$PREVIEW_STAGE"
+else
+  ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+fi
 
 (cd "$BUILD_DIR" && shasum -a 256 "$(basename "$ZIP_PATH")" > "$(basename "$SHA256_PATH")")
 cp "$SHA256_PATH" "$ZIP_SHA256_PATH"
 
 echo ""
 echo "=== Release Paketi Bilgisi ==="
+echo "Mod:     $PACKAGE_MODE"
 echo "Sürüm:   $VERSION"
 echo "Arşiv:   $ZIP_PATH"
 echo "SHA-256: $(cat "$SHA256_PATH")"
 echo ""
 echo "=== Arşiv İçeriği Doğrulaması ==="
-unzip -l "$ZIP_PATH" | grep -E "Ohm\.app/Contents/(Helpers/ohm|PlugIns/OhmWidget\.appex)" || {
+ZIP_CONTENTS=$(unzip -l "$ZIP_PATH")
+echo "$ZIP_CONTENTS" | grep -E "Ohm\.app/Contents/(Helpers/ohm|PlugIns/OhmWidget\.appex)" || {
   echo "Error: Required components missing in release archive." >&2
   exit 1
 }
+if [ "$PACKAGE_MODE" = "preview" ]; then
+  echo "$ZIP_CONTENTS" | grep "FIRST-RUN.md" >/dev/null || {
+    echo "Error: FIRST-RUN.md missing in preview release archive." >&2
+    exit 1
+  }
+  echo "    ✔ FIRST-RUN.md verified inside preview archive."
+fi
 
 echo "Release paketleme başarıyla tamamlandı (exit 0)."

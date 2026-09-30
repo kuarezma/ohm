@@ -1,6 +1,6 @@
 name: Release
 
-on:
+'on':
   push:
     tags:
       - 'v*'
@@ -11,6 +11,9 @@ on:
         required: false
         default: 'false'
         type: boolean
+
+permissions:
+  contents: write
 
 jobs:
   release:
@@ -47,7 +50,6 @@ jobs:
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             scripts/ci/release.sh --dry-run
           else
-            # Not: Secrets yapılandırılmamışsa scripts/ci/release.sh açık mesajla atlar (exit 0)
             scripts/ci/release.sh
           fi
 
@@ -59,6 +61,29 @@ jobs:
           path: |
             build/ci/Ohm-*.zip
             build/ci/Ohm-*.sha256
+
+      - name: Determine Release Mode
+        if: startsWith(github.ref, 'refs/tags/v') && github.event.inputs.dry_run != 'true'
+        id: release_info
+        run: |
+          if compgen -G "build/ci/Ohm-*-preview.zip" > /dev/null; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "release_name=Ohm ${{ github.ref_name }} (Preview)" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "release_name=Ohm ${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') && github.event.inputs.dry_run != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/ci/Ohm-*.zip
+            build/ci/Ohm-*.sha256
+          name: ${{ steps.release_info.outputs.release_name }}
+          prerelease: ${{ steps.release_info.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
 
       # TODO(Sparkle): kullanıcı onayı bekleniyor
       # - name: Generate Sparkle Appcast
