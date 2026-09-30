@@ -6,6 +6,7 @@ public struct ReceiptRowView: View {
     public let row: ReceiptAppRow
     @Bindable var store: OhmStore
     @Environment(\.locale) private var locale
+    @State private var showFreezeConfirmation = false
 
     public init(row: ReceiptAppRow, store: OhmStore) {
         self.row = row
@@ -21,12 +22,14 @@ public struct ReceiptRowView: View {
     }
 
     private var formattedMinutes: String {
-        guard let minutes = row.batteryMinutes else { return "" }
+        guard let minutes = row.batteryMinutes else {
+            return (Double(row.energy_uj) / 1_000_000).formatted(.number.precision(.fractionLength(1)).locale(locale)) + " J"
+        }
         return OhmFormatters.formatDuration(minutes: minutes, locale: locale)
     }
 
     private var accessibilityBatteryText: String {
-        guard let minutes = row.batteryMinutes else { return "" }
+        guard let minutes = row.batteryMinutes else { return "Ölçülen enerji: " + formattedMinutes }
         return OhmFormatters.formatBatteryAccessibility(minutes: minutes, locale: locale)
     }
 
@@ -74,11 +77,16 @@ public struct ReceiptRowView: View {
                     )
             }
             .buttonStyle(.plain)
+            .disabled(!store.canManage(row.appKey))
+            .help(store.canManage(row.appKey) ? "macOS arka plan politikasını uygular; çekirdeğe kesin sabitleme yapmaz." : "Bu kayıt çalışan bir uygulama değil; işlem uygulanamaz.")
             .accessibilityLabel(isECoreActive ? OhmFormatters.localizedFormat("Remove %@ from efficiency cores", locale: locale, row.displayName) : OhmFormatters.localizedFormat("Move %@ to efficiency cores", locale: locale, row.displayName))
 
             // [❄] Button
             Button(action: {
-                store.toggleFreeze(for: row.appKey)
+                if isFrozen { store.toggleFreeze(for: row.appKey) }
+                else {
+                    if !store.requestFreeze(for: row.appKey, name: row.displayName) { showFreezeConfirmation = true }
+                }
             }) {
                 Image(systemName: "snowflake")
                     .font(.system(size: 10, weight: .bold))
@@ -94,9 +102,17 @@ public struct ReceiptRowView: View {
                     )
             }
             .buttonStyle(.plain)
+            .disabled(!store.canManage(row.appKey))
+            .help("Uygulamayı geçici durdurur. Koruma kontrolleri izin verirse uygulanır.")
             .accessibilityLabel(isFrozen ? OhmFormatters.localizedFormat("Unfreeze %@", locale: locale, row.displayName) : OhmFormatters.localizedFormat("Freeze %@", locale: locale, row.displayName))
         }
         .padding(.vertical, 2)
+        .alert("\(row.displayName) dondurulsun mu?", isPresented: $showFreezeConfirmation) {
+            Button("Vazgeç", role: .cancel) { }
+            Button("Dondur") { store.confirmFreeze(for: row.appKey) }
+        } message: {
+            Text("Uygulama geçici duracak; devam eden işler bekleyecektir. Ön plana getirildiğinde çözülür. Önce önemli çalışmalarınızı kaydedin; güvenlik engelleri varsa işlem reddedilir.")
+        }
     }
 }
 
@@ -108,19 +124,19 @@ public struct OtherHardwareRowView: View {
         self.receipt = receipt
     }
 
-    private var otherMinutes: Double {
+    private var otherMinutes: Double? {
         if let pRef = receipt.pRefWatts, pRef > 0, receipt.other_uj > 0 {
             return Double(receipt.other_uj) * 1e-6 / pRef / 60.0
         }
-        return 120.0 // Default 2 hours fallback for preview
+        return nil
     }
 
     private var formattedTime: String {
-        OhmFormatters.formatDuration(minutes: otherMinutes, locale: locale)
+        otherMinutes.map { OhmFormatters.formatDuration(minutes: $0, locale: locale) } ?? "—"
     }
 
     private var accessibilityText: String {
-        OhmFormatters.formatBatteryAccessibility(minutes: otherMinutes, locale: locale)
+        otherMinutes.map { OhmFormatters.formatBatteryAccessibility(minutes: $0, locale: locale) } ?? "Ölçüm yok"
     }
 
     public var body: some View {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import OhmModel
 
 public struct SettingsView: View {
@@ -9,28 +10,53 @@ public struct SettingsView: View {
     }
 
     public var body: some View {
-        TabView {
+        TabView(selection: $store.settingsTab) {
             GeneralSettingsView(store: store)
                 .tabItem {
                     Label(String(localized: "General"), systemImage: "gearshape")
                 }
+                .tag("general")
 
             RulesSettingsView(store: store)
                 .tabItem {
                     Label(String(localized: "Rules"), systemImage: "checklist")
                 }
+                .tag("rules")
 
             NeverFreezeSettingsView(store: store)
                 .tabItem {
                     Label(String(localized: "Never-freeze"), systemImage: "snowflake.slash")
                 }
+                .tag("neverFreeze")
 
             AboutSettingsView()
                 .tabItem {
                     Label(String(localized: "About"), systemImage: "info.circle")
                 }
+                .tag("about")
         }
-        .frame(width: 480, height: 360)
+        .frame(width: 480)
+        .frame(minHeight: 400, idealHeight: 440)
+        .onAppear { store.refreshLoginStatus() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.refreshLoginStatus()
+        }
+        .onChange(of: store.rules.count) { previous, current in
+            if current > previous { store.ruleInputText = "" }
+        }
+        .sheet(isPresented: $store.showOnboarding) {
+            OnboardingView(onDismiss: { store.showOnboarding = false })
+        }
+        .sheet(item: $store.pendingRule) { rule in
+            RuleReviewView(rule: rule, store: store)
+                .interactiveDismissDisabled(store.isRuleBusy)
+        }
+        .alert("Ayar değiştirilemedi", isPresented: Binding(
+            get: { store.preferenceError != nil },
+            set: { if !$0 { store.preferenceError = nil } }
+        )) {
+            Button("Tamam") { store.preferenceError = nil }
+        } message: { Text(store.preferenceError ?? "") }
     }
 }
 
@@ -43,7 +69,7 @@ struct GeneralSettingsView: View {
     var body: some View {
         Form {
             if (store.dataSource as? LiveDataSource)?.isLocalStorage == true {
-                Text(String(localized: "Local mode: widget and ohm receipt are unavailable in this build (unsigned preview)"))
+                Text("Yerel depolama: enerji fişi ve komut satırı çalışır; widget için imzalı App Group gerekir.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -75,9 +101,19 @@ struct GeneralSettingsView: View {
             Section {
                 Toggle(String(localized: "Launch at login"), isOn: $store.launchAtLogin)
                     .accessibilityLabel(OhmFormatters.localizedString("Toggle launch at login", locale: locale))
+                if store.loginNeedsApproval {
+                    Button("Sistem Ayarları’nda izin ver…") { store.openLoginSettings() }
+                    Text("Otomatik açılış macOS onayını bekliyor.").font(.caption)
+                }
 
                 Button(String(localized: "Welcome Guide…")) {
                     store.showOnboarding = true
+                }
+                HStack {
+                    Button("Tüm etkileri geri al") { store.thawAll() }
+                        .disabled(store.activeEffects.isEmpty)
+                    Spacer()
+                    Button("Ohm’dan çık") { NSApp.terminate(nil) }
                 }
             }
         }
@@ -91,7 +127,6 @@ struct GeneralSettingsView: View {
 struct RulesSettingsView: View {
     @Environment(\.locale) private var locale
     @Bindable var store: OhmStore
-    @State private var newRuleText: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -120,6 +155,9 @@ struct RulesSettingsView: View {
                                     actionBadge(for: action)
                                 }
                             }
+                            if let reason = store.vetoReason(for: rule) {
+                                Text(reason).font(.caption).foregroundStyle(.orange)
+                            }
                         }
 
                         Spacer()
@@ -139,16 +177,32 @@ struct RulesSettingsView: View {
             .listStyle(.inset(alternatesRowBackgrounds: true))
 
             HStack {
-                TextField(String(localized: "Describe a rule…"), text: $newRuleText)
+                TextField(String(localized: "Describe a rule…"), text: $store.ruleInputText)
                     .textFieldStyle(.roundedBorder)
 
                 Button(OhmFormatters.localizedString("Add", locale: locale)) {
-                    let trimmed = newRuleText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trimmed = store.ruleInputText.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
                     store.addRule(description: trimmed)
-                    newRuleText = ""
                 }
-                .disabled(newRuleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(store.ruleInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !store.isNLAvailable || store.isRuleBusy)
+            }
+            .disabled(store.isRuleBusy)
+            if store.isRuleBusy { ProgressView("Kural hazırlanıyor…").controlSize(.small) }
+            ForEach(store.ruleAppChoices) { choice in
+                Menu("\(choice.id): uygulamayı seç…") {
+                    ForEach(choice.apps, id: \.self) { app in
+                        Button("\(app.displayName) (\(app.bundleID ?? ""))") {
+                            store.selectRuleApp(app, for: choice.id)
+                        }
+                    }
+                }
+            }
+            if let message = store.ruleMessage {
+                Text(message).font(.caption).textSelection(.enabled)
+            } else if !store.isNLAvailable {
+                Text("Doğal dil kuralları Apple Intelligence ve hazır cihaz içi model gerektirir. Mevcut kuralları yönetmeye devam edebilirsiniz.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(16)
@@ -260,17 +314,23 @@ struct AboutSettingsView: View {
                 .frame(width: 240)
 
             VStack(spacing: 4) {
-                Text(OhmFormatters.localizedString("MIT License · Open Source", locale: locale))
+                Text("Apache-2.0 · Açık kaynak")
                     .font(.footnote)
                     .foregroundColor(.secondary)
 
-                Link("github.com/kuarezma/ohm", destination: URL(string: "https://github.com/kuarezma/ohm")!)
+                if let url = URL(string: "https://github.com/kuarezma/ohm") {
+                Link("github.com/kuarezma/ohm", destination: url)
                     .font(.footnote)
+                }
             }
 
             Text(OhmFormatters.localizedString("Telemetry stays on your Mac.", locale: locale))
                 .font(.caption2)
                 .foregroundColor(.secondary)
+
+            Text("Enerji fişi tüketimin pil süresi karşılığıdır; tasarruf garantisi değildir. E, macOS arka plan politikasını uygular. Dondurma işleri geçici durdurur ve güvenlik kontrollerine tabidir.")
+                .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
             Spacer()
         }

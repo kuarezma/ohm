@@ -5,6 +5,7 @@ import OhmModel
 public struct PopoverHeaderView: View {
     @Bindable var store: OhmStore
     @Environment(\.locale) private var locale
+    @Environment(\.openSettings) private var openSettings
 
     public init(store: OhmStore) {
         self.store = store
@@ -39,7 +40,7 @@ public struct PopoverHeaderView: View {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(.accentColor)
-                Text("\(String(format: "%.1f", liveWatts)) W")
+                Text(store.isReady ? "\(String(format: "%.1f", liveWatts)) W" : "Ölçülüyor…")
                     .font(.system(size: 15, weight: .bold, design: .rounded))
                     .monospacedDigit()
             }
@@ -52,7 +53,8 @@ public struct PopoverHeaderView: View {
             if let cluster = store.systemPower.clusterActive {
                 ClusterBarView(residency: cluster)
             } else {
-                ClusterBarView(residency: ClusterResidency(pActiveRatio: 0.1, eActiveRatio: 0.3))
+                Text("P/E —").font(.caption2).foregroundStyle(.secondary)
+                    .help("Çekirdek etkinliği ölçümü henüz yok.")
             }
 
             Spacer()
@@ -66,7 +68,8 @@ public struct PopoverHeaderView: View {
 
             // Settings Button
             Button(action: {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                store.settingsTab = "general"
+                openSettings()
                 NSApp.activate(ignoringOtherApps: true)
             }) {
                 Image(systemName: "gearshape")
@@ -100,6 +103,7 @@ public struct BatteryStatusLineView: View {
     }
 
     private var batteryText: String {
+        guard store.batteryState.source != .unknown else { return "Pil verisi bekleniyor…" }
         let pct = OhmFormatters.formatPercent(Double(store.batteryState.percent), locale: locale)
         if store.batteryState.isCharging {
             return "\(pct) · \(OhmFormatters.localizedString("Charging", locale: locale))"
@@ -112,6 +116,7 @@ public struct BatteryStatusLineView: View {
     }
 
     private var accessibilityString: String {
+        guard store.batteryState.source != .unknown else { return "Pil verisi bekleniyor." }
         let percent = OhmFormatters.formatPercent(Double(store.batteryState.percent), locale: locale)
         if store.batteryState.isCharging {
             return OhmFormatters.localizedFormat("%@ battery, charging", locale: locale, percent)

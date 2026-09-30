@@ -27,6 +27,9 @@ struct OhmApp: App {
             Task {
                 do {
                     try OhmAppDelegate.selfCheck()
+                    try OhmStore.selfCheck()
+                    try await RuleStore.selfCheck()
+                    try await LiveDataSource.ruleReviewSelfCheck()
                     try await OhmRuntime.selfCheck()
                     print("RUNTIME_SELF_CHECK_OK")
                     exit(0)

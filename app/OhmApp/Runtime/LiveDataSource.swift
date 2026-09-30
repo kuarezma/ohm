@@ -7,15 +7,27 @@ import OhmRules
 import OSLog
 
 private enum LiveAction: Sendable {
-    case toggle(Effect, AppKey)
+    case toggle(Effect, AppKey, confirmedBackground: Bool)
     case response(Runaway, RunawayResponse)
     case neverFreeze([String])
     case rules([Rule])
+    case thawAll
+}
+
+struct RuleAppChoice: Identifiable {
+    let id: String
+    let apps: [AppRef]
 }
 
 @MainActor
 @Observable
 final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
+    private var confirmationAlert: NSAlert?
+    private var confirmationAction: (() -> Void)?
+    private(set) var ruleAppChoices: [RuleAppChoice] = []
+    private var generatedRule: GeneratedRule?
+    private var generatedSentence = ""
+    private var selectedRuleApps: [String: [AppRef]] = [:]
     private(set) static weak var intentSource: LiveDataSource?
     private(set) var systemPower = SystemPower(cpuP: 0, cpuE: 0)
     private(set) var batteryState = BatteryState(source: .unknown, percent: 0, voltage_mV: 0, amperage_mA: 0)
@@ -29,6 +41,12 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
     private(set) var activeEffects: [AppKey: Effect] = [:]
     private(set) var ruleVetoes: [UUID: String] = [:]
     private(set) var lastError: String?
+    var pendingRule: Rule?
+    private(set) var isRuleBusy = false
+    private(set) var ruleMessage: String?
+    private(set) var hasSample = false
+    private(set) var manageableApps: Set<AppKey> = []
+    @ObservationIgnored private var ruleTask: Task<Void, Never>?
 
     private(set) var isLocalStorage = false
     @ObservationIgnored private let hasInjectedRuleStore: Bool
@@ -93,10 +111,14 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
                     for await action in actions {
                         guard !Task.isCancelled, self?.stopping == false else { break }
                         switch action {
-                        case .toggle(let effect, let key): await runtime.toggle(effect, for: key)
+                        case .toggle(let effect, let key, let confirmed):
+                            await runtime.toggle(effect, for: key, confirmedBackground: confirmed)
                         case .response(let runaway, let response): await runtime.respond(to: runaway, response: response)
                         case .neverFreeze(let names): await runtime.setNeverFreeze(names)
                         case .rules(let newRules): await runtime.setRules(newRules)
+                        case .thawAll:
+                            let result = await runtime.handleControl(ControlRequest(operation: .thawAll), origin: .manual)
+                            if !result.success { self?.showFailure(result.message) }
                         }
                         self?.reloadWidget()
                     }
@@ -117,6 +139,10 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
 
     func shutdown() async {
         stopping = true
+        confirmationAlert?.window.close()
+        confirmationAlert = nil
+        confirmationAction = nil
+        ruleTask?.cancel()
         widgetRefresh.stop()
         if Self.intentSource === self { Self.intentSource = nil }
         failureAlert?.window.close()
@@ -129,6 +155,8 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
         await startup?.value
         if let runtime { await runtime.shutdown() }
         await actionTask?.value
+        await ruleTask?.value
+        ruleTask = nil
         actionTask = nil
         startup = nil
         bridge = nil
@@ -137,6 +165,11 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
 
     func apply(_ snapshot: DashboardSnapshot, events: [RunawayEvent]) async {
         guard !stopping else { return }
+        hasSample = true
+        manageableApps = Set(NSWorkspace.shared.runningApplications.compactMap { app in
+            guard let bundleID = app.bundleIdentifier, bundleID != Bundle.main.bundleIdentifier else { return nil }
+            return AppKey(kind: .bundleID, value: bundleID)
+        })
         widgetRefresh.observe(snapshot.tick.wallClock)
         systemPower = snapshot.tick.system
         batteryState = snapshot.tick.battery
@@ -192,7 +225,7 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
         currentRunaway = runaway
         runawayProcess = Self.processInfo(runaway)
         if runaway.actions.contains(.freeze(requiresConfirmation: true)) {
-            showFailure("Arka plan dondurması ek onay gerektirir; onay akışı henüz kullanıma açık değil.")
+            showFailure("Dondurmak için Ohm menüsündeki kaçak süreç kartında Dondur düğmesine basıp onay verin.")
         }
     }
 
@@ -205,6 +238,7 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
         alert.messageText = "İşlem uygulanamadı"
         alert.informativeText = message
         alert.addButton(withTitle: "Tamam")
+        alert.layout()
         // Modeless: a pending confirmation must never block activation/thaw delivery.
         let window = alert.window
         window.isReleasedWhenClosed = false
@@ -213,7 +247,40 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
             button.action = #selector(closeFailureAlert(_:))
         }
         window.center()
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func requestConfirmation(title: String, message: String, button: String, action: @escaping () -> Void) {
+        guard !stopping else { return }
+        confirmationAlert?.window.close()
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Vazgeç")
+        alert.addButton(withTitle: button)
+        for (index, button) in alert.buttons.enumerated() {
+            button.tag = index
+            button.target = self
+            button.action = #selector(resolveConfirmation(_:))
+        }
+        confirmationAction = action
+        confirmationAlert = alert
+        alert.layout()
+        alert.window.isReleasedWhenClosed = false
+        alert.window.title = "İşlem onayı"
+        alert.window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func resolveConfirmation(_ sender: NSButton) {
+        guard confirmationAlert?.buttons.contains(where: { $0 === sender }) == true else { return }
+        let action = confirmationAction
+        confirmationAction = nil
+        confirmationAlert?.window.close()
+        confirmationAlert = nil
+        if sender.tag == 1, !stopping { action?() }
     }
 
     @objc private func closeFailureAlert(_ sender: NSButton) {
@@ -260,8 +327,36 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
         showFailure(messages.joined(separator: "\n"))
     }
 
-    func toggleECore(for appKey: AppKey) { continuation?.yield(.toggle(.eCore, appKey)) }
-    func toggleFreeze(for appKey: AppKey) { continuation?.yield(.toggle(.freeze, appKey)) }
+    func toggleECore(for appKey: AppKey) { continuation?.yield(.toggle(.eCore, appKey, confirmedBackground: false)) }
+    func thawAll() { continuation?.yield(.thawAll) }
+    func toggleFreeze(for appKey: AppKey) { continuation?.yield(.toggle(.freeze, appKey, confirmedBackground: false)) }
+    func confirmFreeze(for appKey: AppKey) { continuation?.yield(.toggle(.freeze, appKey, confirmedBackground: true)) }
+    func moveRunawayToECores(for app: AppKey, pid: Int32) {
+        guard let runaway = currentRunaway, runaway.app == app,
+              runaway.processes.first?.pid == pid else {
+            showFailure("Kaçak süreç değişti; kartı yeniden kontrol edin.")
+            return
+        }
+        continuation?.yield(.response(runaway, runaway.response(to: .eCore)))
+    }
+    func confirmRunawayFreeze(for app: AppKey, pid: Int32) {
+        guard let runaway = currentRunaway, runaway.app == app,
+              let root = runaway.processes.first, root.pid == pid else {
+            showFailure("Kaçak süreç değişti; kartı yeniden kontrol edin.")
+            return
+        }
+        continuation?.yield(.response(runaway, .commands([
+            .freeze(pid: root.pid, origin: .runaway, confirmedBackground: true)
+        ])))
+    }
+    func confirmRunawayQuit(for app: AppKey, pid: Int32) {
+        guard let runaway = currentRunaway, runaway.app == app,
+              runaway.processes.first?.pid == pid else {
+            showFailure("Kaçak süreç değişti; kartı yeniden kontrol edin.")
+            return
+        }
+        continuation?.yield(.response(runaway, runaway.response(to: .quit)))
+    }
     func moveRunawayToECores() { respond(.eCore) }
     func freezeRunaway() { respond(.freeze(requiresConfirmation: false)) }
     func quitRunaway() { respond(.quit) }
@@ -272,30 +367,132 @@ final class LiveDataSource: OhmDataSource, AppRuntimeLifecycle {
     }
 
     func addRule(description: String) {
+        guard !isRuleBusy, pendingRule == nil, !stopping else { return }
         guard isNLAvailable else {
-            showFailure("Canlı kural yönetimi henüz kullanıma açık değil.")
+            ruleMessage = "Doğal dil kuralları için Apple Intelligence’ın açık ve cihaz içi modelin hazır olması gerekir."
             return
         }
-        Task { @MainActor [weak self] in
+        isRuleBusy = true
+        ruleMessage = nil
+        ruleAppChoices = []
+        selectedRuleApps = [:]
+        generatedRule = nil
+        ruleTask = Task { @MainActor [weak self] in
             guard let self, !self.stopping else { return }
+            defer { self.isRuleBusy = false }
             do {
                 let parser = NLRuleParser()
-                let draft = try await parser.parse(sentence: description)
-                switch draft {
-                case .ready(var rule):
-                    rule.enabled = false
-                    try await self.ruleStore.addRule(rule)
-                    self.rules = await self.ruleStore.rules
-                    self.continuation?.yield(.rules(self.rules))
-                case .needsClarification(_, let questions):
-                    let prompt = questions.map(\.question).joined(separator: "\n")
-                    self.showFailure(prompt.isEmpty ? "Kural netleştirme gerektiriyor." : prompt)
-                case .unsupported(let phrases):
-                    self.showFailure("Desteklenmeyen ifadeler: " + phrases.joined(separator: ", "))
-                }
+                let generated = try await parser.generate(from: description)
+                guard !Task.isCancelled, !self.stopping else { return }
+                self.generatedRule = generated
+                self.generatedSentence = description
+                self.prepareRuleDraft()
             } catch {
-                self.showFailure(error.localizedDescription)
+                if !Task.isCancelled { self.ruleMessage = error.localizedDescription }
             }
+        }
+    }
+
+    func selectRuleApp(_ app: AppRef, for name: String, sentence: String) {
+        guard !isRuleBusy, pendingRule == nil, !stopping,
+              sentence == generatedSentence,
+              ruleAppChoices.contains(where: { $0.id == name && $0.apps.contains(app) }) else { return }
+        selectedRuleApps[name.lowercased()] = [app]
+        prepareRuleDraft()
+    }
+
+    private func prepareRuleDraft() {
+        guard let generated = generatedRule else { return }
+        let resolver = DefaultAppResolver(customMappings: selectedRuleApps)
+        let draft = RuleCompiler(appResolver: resolver).compile(generated: generated, rawSentence: generatedSentence)
+        let names = Set(generated.targetApps + generated.conditions.compactMap(\.appName))
+        ruleAppChoices = names.sorted().compactMap { name in
+            let apps = resolver.resolve(appName: name)
+            guard apps.count != 1 else { return nil }
+            let candidates = apps.isEmpty ? NSWorkspace.shared.runningApplications.compactMap { application -> AppRef? in
+                guard application.activationPolicy == .regular,
+                      let id = application.bundleIdentifier, id != Bundle.main.bundleIdentifier else { return nil }
+                return AppRef(bundleID: id, displayName: application.localizedName ?? id)
+            }.sorted { $0.displayName < $1.displayName } : apps
+            return RuleAppChoice(id: name, apps: candidates)
+        }
+        switch draft {
+        case .ready(var rule):
+            rule.enabled = false
+            self.pendingRule = rule
+            self.ruleAppChoices = []
+            self.ruleMessage = nil
+        case .needsClarification(_, let questions):
+            let prompt = Array(Set(questions.map(\.question))).sorted().joined(separator: "\n")
+            self.ruleMessage = (prompt.isEmpty ? "Kural netleştirme gerektiriyor." : prompt)
+                + "\nAdayı seçin veya cümlenizi netleştirin; henüz kural kaydedilmedi."
+        case .unsupported(let phrases):
+            self.ruleAppChoices = []
+            self.ruleMessage = "Desteklenmeyen ifadeler: " + phrases.joined(separator: ", ")
+        }
+    }
+
+    func savePendingRule(enabled: Bool) {
+        guard var rule = pendingRule, !isRuleBusy, !stopping else { return }
+        rule.enabled = enabled
+        isRuleBusy = true
+        ruleTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isRuleBusy = false }
+            do {
+                try await self.ruleStore.addRule(rule)
+                self.rules = await self.ruleStore.rules
+                self.continuation?.yield(.rules(self.rules))
+                self.pendingRule = nil
+                self.ruleMessage = enabled ? "Kural kaydedildi ve etkinleştirildi." : "Kural kapalı olarak kaydedildi."
+            } catch {
+                self.ruleMessage = "Kural kaydedilemedi: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    static func ruleReviewSelfCheck() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ohm-rule-review-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("rules.json")
+        let ruleStore = RuleStore(fileURL: file)
+        let source = LiveDataSource(ruleStore: ruleStore)
+        let chosenApp = AppRef(bundleID: "dev.example.OhmTest", displayName: "Test")
+        source.generatedSentence = "Test pildeyken E-core kullan."
+        source.generatedRule = GeneratedRule(name: "Seçim testi", targetApps: ["Test"], actions: [.eCore],
+                                             match: .all, conditions: [GeneratedCondition(kind: .onBattery)])
+        source.ruleAppChoices = [RuleAppChoice(id: "Test", apps: [chosenApp])]
+        source.selectRuleApp(chosenApp, for: "Test", sentence: "Değişmiş cümle")
+        guard source.pendingRule == nil else { throw RuntimeError.failure("Eski cümleye ait aday uygulandı.") }
+        source.selectRuleApp(chosenApp, for: "Test", sentence: source.generatedSentence)
+        guard let selected = source.pendingRule, selected.targets == .apps([chosenApp]),
+              selected.when == .powerSource(.battery), !selected.enabled else {
+            throw RuntimeError.failure("Uygulama seçiminde koşul veya hedef korunmadı.")
+        }
+        var draft = Rule(name: "Onay testi", enabled: false, source: .manual, when: .always,
+                         targets: .apps([AppRef(bundleID: "dev.example.OhmTest", displayName: "Test")]),
+                         actions: [.eCore()])
+        source.pendingRule = draft
+        guard !FileManager.default.fileExists(atPath: file.path) else {
+            throw RuntimeError.failure("Onaylanmamış taslak diske yazıldı.")
+        }
+        source.savePendingRule(enabled: true)
+        await source.ruleTask?.value
+        draft.enabled = true
+        let persisted = await RuleStore(fileURL: file).load()
+        guard persisted.rules == [draft], source.pendingRule == nil, source.rules == [draft] else {
+            throw RuntimeError.failure("Kullanıcı onayından sonra kural etkin kaydedilemedi.")
+        }
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        draft.id = UUID()
+        source.pendingRule = draft
+        source.savePendingRule(enabled: false)
+        await source.ruleTask?.value
+        guard source.pendingRule?.id == draft.id, source.rules.count == 1,
+              source.ruleMessage?.contains("kaydedilemedi") == true else {
+            throw RuntimeError.failure("Kaydetme hatasında taslak korunmadı veya başarı bildirildi.")
         }
     }
 

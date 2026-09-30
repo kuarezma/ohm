@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 import OhmModel
 
 // MARK: - Runaway Process Information
@@ -117,7 +118,7 @@ public final class PreviewDataSource: OhmDataSource {
 
     public func toggleECore(for appKey: AppKey) {
         if activeEffects[appKey] == .eCore {
-            activeEffects[appKey] = .none
+            activeEffects[appKey] = Effect.none
         } else {
             activeEffects[appKey] = .eCore
         }
@@ -125,7 +126,7 @@ public final class PreviewDataSource: OhmDataSource {
 
     public func toggleFreeze(for appKey: AppKey) {
         if activeEffects[appKey] == .freeze {
-            activeEffects[appKey] = .none
+            activeEffects[appKey] = Effect.none
         } else {
             activeEffects[appKey] = .freeze
         }
@@ -368,14 +369,48 @@ public final class PreviewDataSource: OhmDataSource {
 public final class OhmStore {
     public var dataSource: any OhmDataSource
     public var showOnboarding: Bool = false
-    public var menuBarDisplayMode: MenuBarDisplayMode = .ringAndWatts
-    public var launchAtLogin: Bool = false
+    public var menuBarDisplayMode: MenuBarDisplayMode = .ringAndWatts {
+        didSet { preferences.set(menuBarDisplayMode.rawValue, forKey: "menuBarDisplayMode") }
+    }
+    var settingsTab = "general"
+    var preferenceError: String?
+    var ruleInputText = ""
+    private var loginItemEnabled = false
+    var loginNeedsApproval = false
+    @ObservationIgnored private let preferences: UserDefaults
 
-    public init(dataSource: (any OhmDataSource)? = nil) {
+    public var launchAtLogin: Bool {
+        get { loginItemEnabled }
+        set {
+            guard dataSource is LiveDataSource else { loginItemEnabled = newValue; return }
+            do {
+                if newValue { try SMAppService.mainApp.register() }
+                else { try SMAppService.mainApp.unregister() }
+            } catch {
+                preferenceError = "Oturumda başlatma ayarı değiştirilemedi: \(error.localizedDescription)"
+            }
+            refreshLoginStatus()
+        }
+    }
+
+    public init(dataSource: (any OhmDataSource)? = nil, preferences: UserDefaults = .standard) {
+        self.preferences = preferences
         self.dataSource = dataSource ?? (CommandLine.arguments.contains("--render-previews") ||
             ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
             ? PreviewDataSource.normal : LiveDataSource())
+        if let saved = preferences.string(forKey: "menuBarDisplayMode"),
+           let mode = MenuBarDisplayMode(rawValue: saved) { menuBarDisplayMode = mode }
+        refreshLoginStatus()
     }
+
+    func refreshLoginStatus() {
+        guard dataSource is LiveDataSource else { return }
+        let status = SMAppService.mainApp.status
+        loginItemEnabled = status == .enabled || status == .requiresApproval
+        loginNeedsApproval = status == .requiresApproval
+    }
+
+    func openLoginSettings() { SMAppService.openSystemSettingsLoginItems() }
 
     // Direct Forwarded Accessors
     public var systemPower: SystemPower { dataSource.systemPower }
@@ -389,6 +424,86 @@ public final class OhmStore {
     public var neverFreezeApps: [String] { dataSource.neverFreezeApps }
     public var activeEffects: [AppKey: Effect] { dataSource.activeEffects }
     public var ruleVetoes: [UUID: String] { dataSource.ruleVetoes }
+    var isReady: Bool { (dataSource as? LiveDataSource)?.hasSample ?? true }
+    var isRuleBusy: Bool { (dataSource as? LiveDataSource)?.isRuleBusy ?? false }
+    var ruleMessage: String? { (dataSource as? LiveDataSource)?.ruleMessage }
+    var ruleAppChoices: [RuleAppChoice] { (dataSource as? LiveDataSource)?.ruleAppChoices ?? [] }
+    func selectRuleApp(_ app: AppRef, for name: String) {
+        (dataSource as? LiveDataSource)?.selectRuleApp(app, for: name, sentence: ruleInputText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    var pendingRule: Rule? {
+        get { (dataSource as? LiveDataSource)?.pendingRule }
+        set { (dataSource as? LiveDataSource)?.pendingRule = newValue }
+    }
+
+    func savePendingRule(enabled: Bool) {
+        (dataSource as? LiveDataSource)?.savePendingRule(enabled: enabled)
+    }
+    func thawAll() { (dataSource as? LiveDataSource)?.thawAll() }
+
+    func confirmFreeze(for appKey: AppKey) {
+        if let source = dataSource as? LiveDataSource { source.confirmFreeze(for: appKey) }
+        else { dataSource.toggleFreeze(for: appKey) }
+    }
+
+    func requestFreeze(for key: AppKey, name: String) -> Bool {
+        guard let source = dataSource as? LiveDataSource else { return false }
+        source.requestConfirmation(title: "\(name) dondurulsun mu?",
+            message: "Uygulama geçici duracak; devam eden işler bekleyecektir. Ön plana getirildiğinde çözülür. Önce çalışmalarınızı kaydedin. Güvenlik engeli varsa işlem reddedilir.",
+            button: "Dondur") { [weak source] in source?.confirmFreeze(for: key) }
+        return true
+    }
+
+    func requestRunawayAction(for runaway: RunawayProcessInfo, quit: Bool) -> Bool {
+        guard let source = dataSource as? LiveDataSource else { return false }
+        source.requestConfirmation(title: "\(runaway.name) \(quit ? "kapatılsın" : "dondurulsun") mı?",
+            message: quit ? "Uygulamaya normal kapanma isteği gönderilir. Kaydetme sorularını uygulamada yanıtlayın."
+                : "Uygulama geçici duracak. Önce çalışmalarınızı kaydedin; güvenlik engeli varsa işlem reddedilir.",
+            button: quit ? "Kapat" : "Dondur") { [weak source] in
+                if quit { source?.confirmRunawayQuit(for: runaway.appKey, pid: runaway.pid) }
+                else { source?.confirmRunawayFreeze(for: runaway.appKey, pid: runaway.pid) }
+            }
+        return true
+    }
+
+    func confirmRunawayFreeze(for runaway: RunawayProcessInfo) {
+        if let source = dataSource as? LiveDataSource { source.confirmRunawayFreeze(for: runaway.appKey, pid: runaway.pid) }
+        else { dataSource.freezeRunaway() }
+    }
+
+    func confirmRunawayQuit(for runaway: RunawayProcessInfo) {
+        if let source = dataSource as? LiveDataSource { source.confirmRunawayQuit(for: runaway.appKey, pid: runaway.pid) }
+        else { dataSource.quitRunaway() }
+    }
+
+    func moveRunawayToECores(_ runaway: RunawayProcessInfo) {
+        if let source = dataSource as? LiveDataSource { source.moveRunawayToECores(for: runaway.appKey, pid: runaway.pid) }
+        else { dataSource.moveRunawayToECores() }
+    }
+
+    func canManage(_ key: AppKey) -> Bool {
+        guard let source = dataSource as? LiveDataSource else { return true }
+        return source.manageableApps.contains(key)
+    }
+
+    static func selfCheck() throws {
+        let suiteName = "dev.ohm.preferences-test.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            throw RuntimeError.failure("Tercih test alanı açılamadı.")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let first = OhmStore(dataSource: PreviewDataSource.normal, preferences: defaults)
+        first.menuBarDisplayMode = .wattsOnly
+        let reopened = OhmStore(dataSource: PreviewDataSource.normal, preferences: defaults)
+        guard reopened.menuBarDisplayMode == .wattsOnly else {
+            throw RuntimeError.failure("Menü çubuğu tercihi yeniden açılışta korunmadı.")
+        }
+        defaults.set("invalid-mode", forKey: "menuBarDisplayMode")
+        let repaired = OhmStore(dataSource: PreviewDataSource.normal, preferences: defaults)
+        guard repaired.menuBarDisplayMode == .ringAndWatts else {
+            throw RuntimeError.failure("Geçersiz görünüm tercihi güvenli varsayılana dönmedi.")
+        }
+    }
 
     public func vetoReason(for rule: Rule) -> String? {
         dataSource.vetoReason(for: rule)

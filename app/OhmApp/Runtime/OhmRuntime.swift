@@ -424,14 +424,14 @@ actor OhmRuntime {
         return try await reader.today(at: Date())
     }
 
-    func toggle(_ effect: Effect, for key: AppKey) async {
+    func toggle(_ effect: Effect, for key: AppKey, confirmedBackground: Bool = false) async {
         guard !stopping, let app = visibility.apps[key], let root = app.processes.first else {
             await source?.showFailure("Uygulama artık çalışmıyor veya henüz örneklenmedi.")
             return
         }
         let active = await effects()[key]
         let command: GovernorCommand = effect == .freeze
-            ? (active == .freeze ? .thaw(pid: root.pid) : .freeze(pid: root.pid, origin: .manual, confirmedBackground: false))
+            ? (active == .freeze ? .thaw(pid: root.pid) : .freeze(pid: root.pid, origin: .manual, confirmedBackground: confirmedBackground))
             : .eCore(pid: root.pid, on: active != .eCore, origin: .manual)
         await perform(command, identity: root, key: key)
     }
@@ -441,8 +441,8 @@ actor OhmRuntime {
             await source?.showFailure("Süreç kimliği değişti; işlem uygulanmadı.")
             return
         }
-        if case .freeze = command {
-            guard let app = visibility.apps[key], !app.requiresFreezeConfirmation else {
+        if case .freeze(_, _, let confirmedBackground) = command {
+            guard let app = visibility.apps[key], !app.requiresFreezeConfirmation || confirmedBackground else {
                 await source?.showFailure("Arka plan sürecini dondurmak ek onay gerektirir. Bu ekranda onay verilmediği için işlem reddedildi.")
                 return
             }

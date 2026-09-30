@@ -4,9 +4,9 @@ import OhmModel
 
 public struct PopoverView: View {
     @Bindable var store: OhmStore
-    @State private var ruleInputText: String = ""
     @Environment(\.locale) private var locale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
 
     public init(store: OhmStore) {
         self.store = store
@@ -34,6 +34,7 @@ public struct PopoverView: View {
             Divider()
 
             // Main Content Area
+            ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 // Runaway Card (if reported)
                 if let runaway = store.runawayProcess {
@@ -60,7 +61,7 @@ public struct PopoverView: View {
                         Spacer()
                     }
                 } else {
-                    VStack(spacing: 6) {
+                    LazyVStack(spacing: 6) {
                         ForEach(store.todayReceipt.rows) { row in
                             ReceiptRowView(row: row, store: store)
                         }
@@ -70,6 +71,8 @@ public struct PopoverView: View {
                 }
             }
             .padding(14)
+            }
+            .frame(height: 340)
 
             Divider()
 
@@ -81,16 +84,14 @@ public struct PopoverView: View {
         .frame(width: 360)
         .background(Color(nsColor: .windowBackgroundColor))
         .background(.regularMaterial)
-        .sheet(isPresented: $store.showOnboarding) {
-            OnboardingView(onDismiss: { store.showOnboarding = false })
-        }
     }
 
     private var rulesFooter: some View {
         HStack(spacing: 8) {
             // Active rules counter button
             Button(action: {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                store.settingsTab = "rules"
+                openSettings()
                 NSApp.activate(ignoringOtherApps: true)
             }) {
                 HStack(spacing: 4) {
@@ -115,14 +116,14 @@ public struct PopoverView: View {
                         .font(.system(size: 10))
                         .foregroundColor(.accentColor)
 
-                    TextField(OhmFormatters.localizedString("Describe a rule…", locale: locale), text: $ruleInputText)
+                    TextField(OhmFormatters.localizedString("Describe a rule…", locale: locale), text: $store.ruleInputText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 11))
                         .onSubmit {
                             submitRule()
                         }
 
-                    if !ruleInputText.isEmpty {
+                    if !store.ruleInputText.isEmpty {
                         Button(action: submitRule) {
                             Image(systemName: "arrow.up.circle.fill")
                                 .font(.system(size: 12))
@@ -143,15 +144,18 @@ public struct PopoverView: View {
                         .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
                 )
                 .frame(maxWidth: 180)
+                .disabled(store.isRuleBusy || store.pendingRule != nil)
             }
         }
     }
 
     private func submitRule() {
-        let trimmed = ruleInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = store.ruleInputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         store.addRule(description: trimmed)
-        ruleInputText = ""
+        store.settingsTab = "rules"
+        openSettings()
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 

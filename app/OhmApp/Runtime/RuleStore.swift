@@ -129,45 +129,89 @@ public actor RuleStore {
 
     public func addRule(_ rule: Rule) throws {
         try RuleValidator.validate(rule: rule, neverFreezeBundleIDs: Set(neverFreeze))
-        rules.append(rule)
-        try save()
+        guard !rules.contains(where: { $0.id == rule.id }) else { return }
+        guard rules.count < RuleValidator.maxRulesCount else {
+            throw RuleValidationError("En fazla \(RuleValidator.maxRulesCount) kural kaydedilebilir.")
+        }
+        try persistChange { rules.append(rule) }
     }
 
     public func toggleRule(id: UUID) throws {
         guard let index = rules.firstIndex(where: { $0.id == id }) else { return }
-        rules[index].enabled.toggle()
-        try save()
+        if !rules[index].enabled {
+            try RuleValidator.validate(rule: rules[index], neverFreezeBundleIDs: Set(neverFreeze))
+        }
+        try persistChange { rules[index].enabled.toggle() }
     }
 
     public func deleteRule(id: UUID) throws {
-        rules.removeAll { $0.id == id }
-        try save()
+        try persistChange { rules.removeAll { $0.id == id } }
     }
 
     public func setRules(_ newRules: [Rule]) throws {
-        self.rules = newRules
-        try save()
+        try persistChange { rules = newRules }
     }
 
     public func addNeverFreeze(_ name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !neverFreeze.contains(trimmed) else { return }
-        neverFreeze.append(trimmed)
-        try save()
+        try persistChange { neverFreeze.append(trimmed) }
     }
 
     public func removeNeverFreeze(_ name: String) throws {
-        neverFreeze.removeAll { $0 == name }
-        try save()
+        try persistChange { neverFreeze.removeAll { $0 == name } }
     }
 
     public func setNeverFreeze(_ names: [String]) throws {
-        self.neverFreeze = names
-        try save()
+        try persistChange { neverFreeze = names }
+    }
+
+    // A failed disk write must not leave a rule active only in memory.
+    private func persistChange(_ change: () -> Void) throws {
+        let previousRules = rules
+        let previousNeverFreeze = neverFreeze
+        change()
+        do { try save() }
+        catch {
+            rules = previousRules
+            neverFreeze = previousNeverFreeze
+            throw error
+        }
     }
 
     public func clearCorruptWarning() {
         self.corruptWarning = nil
+    }
+
+    static func selfCheck() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ohm-rule-write-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("rules.json")
+        let store = RuleStore(fileURL: file)
+        let rule = Rule(name: "Yazma testi", source: .manual, when: .always,
+                        targets: .apps([AppRef(bundleID: "dev.example.OhmTest", displayName: "Test")]),
+                        actions: [.eCore()])
+        try await store.addRule(rule)
+        try await store.addNeverFreeze("Test")
+        let reopened = RuleStore(fileURL: file)
+        let restored = await reopened.load()
+        guard restored.rules == [rule], restored.neverFreeze == ["Test"] else {
+            throw RuntimeError.failure("Kural veya koruma listesi yeniden yüklenemedi.")
+        }
+        // A directory at the destination forces atomic replacement to fail without relying on permissions.
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        var failed = false
+        do { try await store.toggleRule(id: rule.id) } catch { failed = true }
+        guard failed, await store.rules == [rule] else {
+            throw RuntimeError.failure("Disk hatası kapalı/etkin kural durumunu değiştirdi.")
+        }
+        failed = false
+        do { try await store.removeNeverFreeze("Test") } catch { failed = true }
+        guard failed, await store.neverFreeze == ["Test"] else {
+            throw RuntimeError.failure("Disk hatası koruma listesini bellekte değiştirdi.")
+        }
     }
 
     private func hasUnsupportedCondition(_ condition: Condition) -> Bool {

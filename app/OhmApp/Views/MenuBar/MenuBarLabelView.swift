@@ -75,7 +75,7 @@ public struct MenuBarLabelView: View {
     }
 
     private var wattText: some View {
-        Text("\(String(format: "%.1f", liveWatts))W")
+        Text(store.isReady ? "\(String(format: "%.1f", liveWatts))W" : "—W")
             .font(.system(size: 11, weight: .semibold, design: .rounded))
             .monospacedDigit()
     }
