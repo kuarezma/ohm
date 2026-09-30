@@ -1208,19 +1208,19 @@
         }
       }
     },
-    "Version 0.0.1 (1)" : {
+    "Version %@ (%@)" : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Version 0.0.1 (1)"
+            "value" : "Version %@ (%@)"
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sürüm 0.0.1 (1)"
+            "value" : "Sürüm %@ (%@)"
           }
         }
       }

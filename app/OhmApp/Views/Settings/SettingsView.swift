@@ -250,7 +250,9 @@ struct AboutSettingsView: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
 
-            Text(OhmFormatters.localizedString("Version 0.0.1 (1)", locale: locale))
+            Text(String(format: OhmFormatters.localizedString("Version %@ (%@)", locale: locale),
+                        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
+                        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))
                 .font(.footnote)
                 .foregroundColor(.secondary)
 
