@@ -351,6 +351,13 @@ func openJournal(_ dir: String) throws -> FreezeJournal {
     try JournalSession.open(paths: JournalPaths(directory: dir), ownerLockRetry: 1).0
 }
 
+/// P-share thresholds need real Apple Silicon scheduling; GitHub's macOS runners are VMs, so there
+/// only the kernel flag (the actual safety property) is asserted.
+let onRealHardware = ProcessInfo.processInfo.environment["CI"] == nil
+
+/// Non-zero while PRIO_DARWIN_BG is set on `pid`.
+func darwinBG(_ pid: Int32) -> Int32 { getpriority(PRIO_DARWIN_PROCESS, id_t(pid)) }
+
 func pShare(_ pid: Int32, seconds: Double = 1.0) -> Double? {
     guard let a = ProcessProbe.energy(pid) else { return nil }
     usleep(useconds_t(seconds * 1e6))

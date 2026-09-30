@@ -139,7 +139,8 @@ struct OhmGovernorTests {
         let after = pShare(yes) ?? -1
         print("T-023 test16: P_share baseline=\(String(format: "%.2f", before)) E-core=\(String(format: "%.2f", during)) after kill -9 Ohm=\(String(format: "%.2f", after))")
         #expect(during < 0.2)
-        #expect(after > 0.9)
+        #expect(darwinBG(yes) == 0)
+        #expect(!onRealHardware || after > 0.9)
     }
 
     @Test("22a: spawnedWatcher end to end — Ohm spawns the watcher; kill -9 Ohm → thawed and BG removed within 1 s")
@@ -164,7 +165,8 @@ struct OhmGovernorTests {
         let after = pShare(yes, seconds: 0.5) ?? -1
         print("T-023 test22: spawnedWatcher: kill -9 Ohm → stat=\(isT(target) ? "T" : "S") after \(String(format: "%.1f", ms)) ms; P_share E-core=\(String(format: "%.2f", during)) after=\(String(format: "%.2f", after))")
         #expect(thawed)
-        #expect(after > 0.9)
+        #expect(darwinBG(yes) == 0)
+        #expect(!onRealHardware || after > 0.9)
         // The spawned watcher exits by itself after recovery.
         #expect(waitUntil(2) { !FileLock.isHeldByAnother(path: dir + "/thawd.lock") })
     }
@@ -657,7 +659,8 @@ struct OhmGovernorTests {
         let rep = await rig.gov.shutdown()
         #expect(rep == ThawReport(freezeGroups: 1, eCoreGroups: 1))
         #expect(!isT(a))
-        #expect((pShare(y) ?? 0) > 0.9)
+        #expect(darwinBG(y) == 0)
+        #expect(!onRealHardware || (pShare(y) ?? 0) > 0.9)
         #expect(vetoes(await rig.freeze(a)).contains(.shuttingDown))
         let snap = JournalReader.read(path: rig.dir + "/journal.jsonl")
         #expect(snap.openGroups().isEmpty)
