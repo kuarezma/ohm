@@ -355,8 +355,15 @@ func openJournal(_ dir: String) throws -> FreezeJournal {
 /// only the kernel flag (the actual safety property) is asserted.
 let onRealHardware = ProcessInfo.processInfo.environment["CI"] == nil
 
-/// Non-zero while PRIO_DARWIN_BG is set on `pid`.
-func darwinBG(_ pid: Int32) -> Int32 { getpriority(PRIO_DARWIN_PROCESS, id_t(pid)) }
+/// 1 while PRIO_DARWIN_BG is set on `pid`, 0 when clear, -1 if unreadable. getpriority(PRIO_DARWIN_PROCESS)
+/// reports 0 for other processes even when the flag is set, so read the task's base priority instead:
+/// darwin BG pins it to 4 (measured: 31 → 4 → 31). Only valid for non-GUI test processes (no App Nap).
+func darwinBG(_ pid: Int32) -> Int32 {
+    var info = proc_taskinfo()
+    let size = Int32(MemoryLayout<proc_taskinfo>.size)
+    guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, size) == size else { return -1 }
+    return info.pti_priority <= 4 ? 1 : 0
+}
 
 func pShare(_ pid: Int32, seconds: Double = 1.0) -> Double? {
     guard let a = ProcessProbe.energy(pid) else { return nil }
