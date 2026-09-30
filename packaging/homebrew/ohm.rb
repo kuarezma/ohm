@@ -13,9 +13,16 @@ cask "ohm" do
   homepage "https://github.com/kuarezma/ohm"
 
   depends_on arch: :arm64
-  depends_on macos: ">= :tahoe"
+  depends_on macos: :tahoe
 
   app "Ohm.app"
+
+  zap trash: [
+    "~/Library/Application Support/Ohm",
+    "~/Library/Caches/dev.ohm.Ohm",
+    "~/Library/Group Containers/*.dev.ohm",
+    "~/Library/Preferences/dev.ohm.Ohm.plist",
+  ]
 
   caveats <<~EOS
     Ohm #{version} is an unsigned preview (not notarized). If macOS blocks it on first launch:
@@ -24,11 +31,4 @@ cask "ohm" do
       xattr -dr com.apple.quarantine "#{appdir}/Ohm.app"
     Unsigned builds keep data locally, so the widget and `ohm receipt` show no data.
   EOS
-
-  zap trash: [
-    "~/Library/Application Support/Ohm",
-    "~/Library/Caches/dev.ohm.Ohm",
-    "~/Library/Group Containers/*.dev.ohm",
-    "~/Library/Preferences/dev.ohm.Ohm.plist",
-  ]
 end
