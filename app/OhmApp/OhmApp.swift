@@ -6,7 +6,8 @@ import OhmModel
 @main
 struct OhmApp: App {
     @NSApplicationDelegateAdaptor(OhmAppDelegate.self) private var delegate
-    @State private var store = OhmStore()
+    // The installed delegate owns the model used by both runtime and scenes.
+    private var store: OhmStore { delegate.store }
 
     init() {
         if let index = CommandLine.arguments.firstIndex(of: "--runtime-smoke") {
@@ -50,7 +51,6 @@ struct OhmApp: App {
             PreviewRenderer.renderAll(to: outputDir, localeCode: requestedLocale)
             exit(0)
         }
-        delegate.source = store.dataSource as? LiveDataSource
     }
 
     private static func fail(_ message: String) -> Never {
@@ -117,13 +117,17 @@ protocol AppRuntimeLifecycle: AnyObject {
 
 @MainActor
 final class OhmAppDelegate: NSObject, NSApplicationDelegate {
+    let store = OhmStore()
     var source: (any AppRuntimeLifecycle)? {
         didSet { startSourceIfNeeded() }
     }
     private var sourceStarted = false
     private var terminationStarted = false
 
-    func applicationDidFinishLaunching(_ notification: Notification) { startSourceIfNeeded() }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if source == nil { source = store.dataSource as? LiveDataSource }
+        startSourceIfNeeded()
+    }
 
     private func startSourceIfNeeded() {
         guard !sourceStarted, !terminationStarted, let source else { return }
@@ -151,13 +155,15 @@ final class OhmAppDelegate: NSObject, NSApplicationDelegate {
 
     static func selfCheck() throws {
         let notification = Notification(name: NSApplication.didFinishLaunchingNotification)
-        for callbackFirst in [true, false] {
+        do {
             let delegate = OhmAppDelegate()
             let source = LaunchProbe()
-            if callbackFirst { delegate.applicationDidFinishLaunching(notification) }
+            guard delegate.store === delegate.store else {
+                throw RuntimeError.failure("Delegate ekran modelini her erişimde yeniden oluşturdu.")
+            }
             delegate.source = source
             guard source.starts == 1 else {
-                throw RuntimeError.failure("Kaynak atanınca runtime tam bir kez başlamadı (callbackFirst=\(callbackFirst)).")
+                throw RuntimeError.failure("Kaynak atanınca runtime tam bir kez başlamadı.")
             }
             delegate.applicationDidFinishLaunching(notification)
             delegate.applicationDidFinishLaunching(notification)
