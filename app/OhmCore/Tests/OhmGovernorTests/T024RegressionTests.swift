@@ -135,7 +135,7 @@ struct T024RegressionTests {
         let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty, "spawned processes survived teardown") }
         let rig = try Rig("r4") { $0.minHiddenFloor = 0 }
         let y = bag.spawn(hostPath, ["burn", "--seconds", "60"])
-        let key = AppKey.bundle("dev.ohmtest.stale")
+        let key = AppKey.bundle("com.apple.TextEdit")
         rig.apps.add(appInfo(y, bundleID: key.value), hidden: false)
         let gov = rig.gov
         rig.apps.onHide.withLock { $0 = { _ in Task { _ = await gov.reconcile(DesiredState()) } } }

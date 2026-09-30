@@ -453,7 +453,7 @@ struct OhmGovernorTests {
             let bag = ProcessBag(); defer { #expect(bag.cleanup().isEmpty, "spawned processes survived teardown") }
             let rig = try Rig("t18-\(trig)") { $0.minHiddenFloor = 0 }
             let a = bag.spawn("/bin/sleep", ["120"])
-            let key = AppKey.bundle("dev.ohmtest.race")
+            let key = AppKey.bundle(trig == "ruleDeleted" ? "com.apple.TextEdit" : "dev.ohmtest.race")
             rig.apps.add(appInfo(a, bundleID: key.value), hidden: false)
             let gov = rig.gov, prot = rig.prot, probes = rig.probes
             rig.apps.onHide.withLock {

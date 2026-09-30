@@ -17,10 +17,6 @@ public protocol ProcessSignaling: AnyObject {
     func identityStatus(_ id: ProcessIdentity) -> ProcessProbe.IdentityStatus
 }
 
-extension ProcessSignaling {
-    func matches(_ id: ProcessIdentity) -> Bool { startAbs(id.pid) == id.startAbsTime }
-}
-
 public final class DarwinSignaler: ProcessSignaling {
     public init() {}
     public func startAbs(_ pid: Int32) -> UInt64? { ProcessProbe.startAbs(pid) }

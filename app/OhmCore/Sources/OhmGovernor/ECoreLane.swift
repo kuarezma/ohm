@@ -23,6 +23,11 @@ final class ECoreLane {
 
     func group(root pid: Int32) -> ECoreGroup? { groups[pid] }
 
+    /// Refresh the merged request even when no helper has started since the previous reconcile.
+    func updateParams(root: Int32, params: ECoreParams) {
+        groups[root]?.params = params
+    }
+
     /// Applies to `root` + `helpers`. Throws the journal error before anything is changed.
     func apply(app: RunningAppInfo, key: AppKey?, origin: EffectOrigin, params: ECoreParams,
                helpers: [ProcessIdentity], journal: any FreezeJournaling) throws -> UUID {
@@ -32,7 +37,7 @@ final class ECoreLane {
                                          pids: [JournalPid(app.identity, role: .root)]
                                              + helpers.map { JournalPid($0, role: .helper) }), sync: true)
         var applied: [ProcessIdentity] = []
-        for p in members where signaler.matches(p) {
+        for p in members where signaler.identityStatus(p) == .match {
             if signaler.setBackground(p.pid, true) == 0 { applied.append(p) }
         }
         groups[app.pid] = ECoreGroup(id: id, app: app, key: key, origin: origin, params: params, pids: applied)
@@ -46,7 +51,7 @@ final class ECoreLane {
         guard !fresh.isEmpty else { return }
         try journal.append(JournalRecord(op: .ecore, group: g.id, app: g.app.bundleID, origin: g.origin.journalValue,
                                          pids: fresh.map { JournalPid($0, role: .helper) }), sync: true)
-        for p in fresh where signaler.matches(p) {
+        for p in fresh where signaler.identityStatus(p) == .match {
             if signaler.setBackground(p.pid, true) == 0 { g.pids.append(p) }
         }
         groups[root] = g
@@ -80,6 +85,11 @@ final class ECoreLane {
 
     func dropMember(_ pid: Int32) {
         for (root, var g) in groups where g.pids.contains(where: { $0.pid == pid }) {
+            guard let member = g.pids.first(where: { $0.pid == pid }) else { continue }
+            switch signaler.identityStatus(member) {
+            case .gone, .mismatch: break
+            case .unknown, .match: continue
+            }
             g.pids.removeAll { $0.pid == pid }
             groups[root] = g
         }

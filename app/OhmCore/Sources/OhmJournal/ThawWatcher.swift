@@ -8,7 +8,7 @@ public enum ThawWatcher {
     public enum Mode: Sendable, Equatable {
         /// LaunchAgent (`KeepAlive`): lives forever.
         case agent
-        /// Spawned by Ohm (`--spawned`): recovers once after Ohm dies, then exits.
+        /// Spawned by Ohm (`--spawned`): retries after Ohm dies until no open effect remains.
         case spawned
     }
 
@@ -53,7 +53,7 @@ public enum ThawWatcher {
         switch mode {
         case .spawned:
             // Ohm spawned us while holding owner.lock, so blocking here is "wait for Ohm to die".
-            recoverOnce(paths: paths)
+            spawnedLoop(paths: paths)
             withExtendedLifetime(thawdLock) {}
             exit(0)
         case .agent:
@@ -61,6 +61,24 @@ public enum ThawWatcher {
             withExtendedLifetime(thawdLock) {}
             exit(0)
         }
+    }
+
+    /// The spawned watcher keeps its liveness lock until recovery verifies every effect is undone.
+    static func spawnedLoop(paths: JournalPaths, recover: (() -> RecoveryReport?)? = nil,
+                            pause: (Double) -> Void = { usleep(useconds_t($0 * 1e6)) },
+                            shouldStop: () -> Bool = { false }) {
+        var failures = 0
+        while !shouldStop() {
+            let report: RecoveryReport?
+            if let recover { report = recover() } else { report = recoverOnce(paths: paths) }
+            if let report, !report.needsRetry, !hasOpenGroups(paths) { return }
+            failures = min(failures + 1, 7)
+            pause(retryDelay(failures))
+        }
+    }
+
+    private static func retryDelay(_ failures: Int) -> Double {
+        min(5.0, 0.1 * pow(2, Double(failures - 1)))
     }
 
     /// LaunchAgent loop. After every recovery the journal is checked again *after* the watch is
@@ -75,9 +93,9 @@ public enum ThawWatcher {
             if shouldStop() { return }
             let r = recoverOnce(paths: paths)
             afterRecovery?()
-            if r == nil || r?.rewriteFailed == true || r?.unresolved.isEmpty == false {
-                failures = min(failures + 1, 6)
-                usleep(useconds_t(min(5.0, 0.1 * pow(2, Double(failures - 1))) * 1e6))
+            if r == nil || r?.needsRetry == true {
+                failures = min(failures + 1, 7)
+                usleep(useconds_t(retryDelay(failures) * 1e6))
             } else {
                 failures = 0
             }
