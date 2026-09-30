@@ -22,10 +22,7 @@ extension EffectOrigin {
     public var isRule: Bool { if case .rule = self { true } else { false } }
 
     public var isAutomatic: Bool {
-        switch self {
-        case .rule, .runaway: true
-        case .manual, .cli: false
-        }
+        isRule
     }
 }
 
@@ -48,6 +45,7 @@ public enum FreezeVeto: String, Sendable, Codable, Hashable, CaseIterable {
     case safetyProbeFailed
     // General state.
     case powerOffInProgress, postWakeQuiet, shuttingDown, protectionNotReady, journalUnwritable
+    case bootUnverified, recoveryPending
     // Tree (§ 3).
     case unstableTree, unsafeTopology, unverifiedTopology
     // Procedure (§ 4).

@@ -19,15 +19,16 @@ Her görevin model seçimi ve gerekçesi `Docs/PLAN.md` § "Görev tablosu"ndad�
 | T-024 | Kritik review T-021 + T-023 | GPT-6 Astra high | Codex 🟠3 | T-021, T-023 | DONE | Bulgular testle kapanır |
 | T-025 | Kararsız Governor testleri 20 ve 22a: kök neden | GPT-6.1 Sol medium | Codex 🟡2 | T-023 | DONE | 20× Governor suite + 3× tam `swift test` kırmızısız |
 | T-026 | Dondurma güvenliği P1'leri + otomatik dondurma izin listesi (T-001b #1–4, #8) | GPT-6.1 Sol high | Codex 🟠3 | T-025 | DONE | Her bulguya regresyon testi; Governor/Journal testleri yeşil; kritik review Opus high |
-| T-026b | T-026 kritik review takibi (5 P2 + P3) | GPT-6.1 Sol high | Codex 🟠3 | T-026 | IN-PROGRESS | Her P2'ye regresyon testi; Governor/Journal yeşil |
+| T-026b | T-026 kritik review takibi (5 P2 + P3) | GPT-6.1 Sol high | Codex 🟠3 | T-026 | DONE | Her P2'ye regresyon testi; Governor/Journal yeşil |
 | T-027 | Ledger doğruluğu (T-001b #10–16, #18) | GPT-6.1 Sol medium | Codex 🟡2 | – | DONE | Her bulguya test; `swift test --filter OhmLedger` yeşil; ADR 0002 tek GPU kararı |
 | T-028 | Kural derleyici/motor doğruluğu (T-001b #5–7, #9) | GPT-6.1 Sol medium | Codex 🟡2 | – | DONE | Her bulguya test; `swift test --filter OhmRules` yeşil |
-| T-029 | Örnekleme geri basıncı (T-001b #17) | GPT-6.1 Sol medium | Codex 🟡2 | T-027 | IN-PROGRESS | Tüketici durunca bellek sınırlı; enerji toplamı korunur (test) |
+| T-029 | Örnekleme geri basıncı (T-001b #17) | GPT-6.1 Sol medium | Codex 🟡2 | T-027 | DONE | Tüketici durunca bellek sınırlı; enerji toplamı korunur (test) |
 | T-030 | SwiftUI popover, halka, Settings, onboarding | Gemini 3.8 Flash high | AG 🔴3 | T-021 | DONE | Preview görüntüleri, açık/koyu, VoiceOver |
 | T-031 | RuleEngine ve kural arayüzü | Gemini 3.8 Flash high | AG 🔴3 | T-001 | DONE | Kural testleri yeşil |
 | T-032 | RunawayDetector ve bildirimler | GPT-6.1 Sol medium | Codex 🟡2 | T-021 | DONE | Sahte yükte tetiklenir |
 | T-033 | Widget, App Intents, `ohm` CLI | Gemini 3.8 Flash high | AG 🔴3 | T-022 | TODO | `ohm receipt --today` çıktısı |
-| T-034 | `OhmRuntime` kompozisyon kökü: örnekleme → ledger → tahmin → kaçak dedektörü → UI (ADR 0001 §2) | GPT-6.1 Sol high | Codex 🟠3 | T-029, T-032 | TODO | Gerçek veriyle popover; kill -9 testi |
+| T-034 | `OhmRuntime` kompozisyon kökü: örnekleme → ledger → tahmin → kaçak dedektörü → UI (ADR 0001 §2) | GPT-6.1 Sol high | Codex 🟠3 | T-029, T-032 | IN-PROGRESS | `--runtime-smoke 90`: ticks>0, ledger satırı, watt>0; kill -9 testi |
+| T-035 | Kural motoru + NL kural ekleme uygulamaya bağlı (RuleEngine bağlam olayları → DesiredState → Governor) | GPT-6.1 Sol medium | Codex 🟡2 | T-034 | TODO | Kural oluştur/aç/kapat canlı çalışır |
 | T-040 | Doğal dilde kural (FoundationModels) | Gemini 3.8 Flash high | AG 🔴3 | T-031 | DONE | 20 cümlede ≥18 doğru |
 | T-041 | Pil tahmini | Gemini 3.8 Flash high | AG 🔴3 | T-022 | DONE | Hata <20 dk |
 | T-050 | Site tasarım yönü ve metin taslağı | Opus 5.5 medium (şef) | CC 🔵2 | – | DONE | `Docs/SITE-BRIEF.md` |

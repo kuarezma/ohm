@@ -209,6 +209,8 @@ struct OhmJournalTests {
         var body = line(JournalRecord(op: .open, boot: ProcessProbe.bootSessionUUID(), owner: me))
         body += line(JournalRecord(op: .freeze, group: g, app: "x", pids: [pidEntry(root)]))
         body += "{not json\n"
+        // Re-establish provenance after the damaged line; T026b tests cover unknown segments.
+        body += line(JournalRecord(op: .open, boot: ProcessProbe.bootSessionUUID(), owner: me))
         body += line(JournalRecord(op: .freeze, group: g, app: "x", pids: [pidEntry(helper, .helper)]))
         body += line(JournalRecord(op: .thaw, group: g, reason: "user"))
         try body.write(toFile: paths.journal, atomically: false, encoding: .utf8)

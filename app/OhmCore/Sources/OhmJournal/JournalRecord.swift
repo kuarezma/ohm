@@ -135,6 +135,8 @@ public enum JournalReader {
                 } else {
                     snap.corrupt = true
                 }
+                // A broken line may have opened a new boot segment. Never inherit the old boot.
+                boot = nil
                 continue
             }
             if r.op == .open { boot = r.boot }
@@ -159,6 +161,9 @@ extension JournalSnapshot {
                 if groups[g] == nil {
                     groups[g] = OpenGroup(kind: kind, group: g, app: r.app, boot: recordBoots[i], pids: [])
                     order.append(g)
+                } else if groups[g]?.boot != recordBoots[i] {
+                    // Any uncertain member makes the whole group's boot provenance uncertain.
+                    groups[g]?.boot = nil
                 }
                 groups[g]?.pids.append(contentsOf: r.pids ?? [])
             case .thaw, .ecoreOff:

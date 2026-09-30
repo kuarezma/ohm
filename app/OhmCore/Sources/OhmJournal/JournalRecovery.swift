@@ -3,11 +3,17 @@ import Foundation
 import OhmModel
 
 public struct RecoveryReport: Sendable {
+    public init() {}
     /// Groups from another boot session were discarded without any signal (§ 5 rule 2).
     public var discardedForBoot = false
-    /// Groups whose boot session could not be established (no `open` record, or the current boot
-    /// is unreadable). Not a match (D3): no signal; kept with the original boot and retried.
+    /// Groups with recorded provenance whose current boot is temporarily unreadable. Not a match
+    /// (D3): no signal; kept with the original boot and retried.
     public var unverifiedBoot: [JournalPid] = []
+    /// No boot was ever recorded for these groups. Retained for explicit user resolution only.
+    public var missingRecordedBoot: [JournalPid] = []
+    public var forcedClosedGroups: [UUID] = []
+    /// Completed/discarded groups, for accurate UI counts on explicit thaw-all of old sessions.
+    public var closedGroups: [UUID: OpenGroupKind] = [:]
     public var corrupt = false
     public var ignoredTail = false
     /// Processes that received SIGCONT (helpers first, then root, per group).
@@ -25,9 +31,11 @@ public struct RecoveryReport: Sendable {
     public var openGroupsFound: Int = 0
     /// The journal could not be rewritten; the caller must not enable effects (T-024 #2).
     public var rewriteFailed = false
+    public var rewritePerformed = false
 
     /// Watchers must keep protecting every effect whose undo could not be verified.
     public var needsRetry: Bool { rewriteFailed || !unresolved.isEmpty || !unverifiedBoot.isEmpty }
+    public var blocksEffects: Bool { needsRetry || !missingRecordedBoot.isEmpty }
 }
 
 /// How recovery reaches processes; tests inject failures.
@@ -65,7 +73,8 @@ public enum JournalRecovery {
     ///   - consumeNotices: Ohm passes true after it has shown the notices; the watcher keeps them.
     @discardableResult
     public static func run(lock: OwnerLock, owner: JournalPid, consumeNotices: Bool,
-                           signaler: any RecoverySignaling = LiveRecoverySignaler()) -> RecoveryReport {
+                           signaler: any RecoverySignaling = LiveRecoverySignaler(),
+                           forceCloseUnverifiable: Bool = false) -> RecoveryReport {
         let paths = lock.paths
         var report = RecoveryReport()
         let snap = JournalReader.read(path: paths.journal)
@@ -77,6 +86,13 @@ public enum JournalRecovery {
         let groups = snap.openGroups()
         report.openGroupsFound = groups.count
         var retained: [JournalRecord] = []
+        var forcedClosures: [JournalRecord] = []
+        func forceClose(_ group: OpenGroup) {
+            report.forcedClosedGroups.append(group.group)
+            report.closedGroups[group.group] = group.kind
+            forcedClosures.append(JournalRecord(op: group.kind == .freeze ? .thaw : .ecoreOff,
+                                               group: group.group, reason: "userForcedUnverified"))
+        }
         func retain(_ group: OpenGroup, pids: [JournalPid]) {
             // Preserve segment provenance: a fresh current-boot `open` must never turn an unknown
             // or different boot into a match on the next recovery. Keep each line below 4 KB.
@@ -90,17 +106,27 @@ public enum JournalRecovery {
         for g in groups {
             // D3: start times are only comparable within one boot session. Unknown on either side
             // is not a match.
-            guard let b = g.boot, let cur = currentBoot else {
+            guard let b = g.boot else {
+                if forceCloseUnverifiable { forceClose(g) } else {
+                    report.missingRecordedBoot += g.pids
+                    retain(g, pids: g.pids)
+                }
+                continue
+            }
+            guard let cur = currentBoot else {
+                if forceCloseUnverifiable { forceClose(g); continue }
                 report.unverifiedBoot += g.pids
                 retain(g, pids: g.pids)
                 continue
             }
             guard b == cur else {
                 report.discardedForBoot = true
+                report.closedGroups[g.group] = g.kind
                 continue
             }
             if let app = g.app, !report.apps.contains(app) { report.apps.append(app) }
             var pending: [JournalPid] = []
+            var knownUndoFailed = false
             let order: [JournalPid]
             switch g.kind {
             case .freeze:
@@ -123,12 +149,17 @@ public enum JournalRecovery {
                         report.skippedIdentity.append(p)
                     } else {
                         pending.append(p)
+                        knownUndoFailed = true
                     }
                 }
             }
             if !pending.isEmpty {
-                report.unresolved += pending
-                retain(g, pids: pending)
+                if forceCloseUnverifiable && !knownUndoFailed { forceClose(g) } else {
+                    report.unresolved += pending
+                    retain(g, pids: pending)
+                }
+            } else {
+                report.closedGroups[g.group] = g.kind
             }
         }
 
@@ -136,9 +167,10 @@ public enum JournalRecovery {
         // groups that are still unresolved (after the notices: a `recovered` record closes what precedes it).
         var kept = consumeNotices ? [] : report.notices
         let signalled = report.thawed.count + report.eCoreCleared.count
-        if signalled > 0 || !report.unverifiedBoot.isEmpty {
+        if signalled > 0 || !report.unverifiedBoot.isEmpty || !report.missingRecordedBoot.isEmpty {
             var n = JournalRecord(op: .recovered, count: signalled, apps: report.apps)
             if !report.unverifiedBoot.isEmpty { n.reason = "unverifiedBoot:\(report.unverifiedBoot.count)" }
+            if !report.missingRecordedBoot.isEmpty { n.reason = "missingRecordedBoot:\(report.missingRecordedBoot.count)" }
             // An unreadable boot can last indefinitely; retries must not append the same notice forever.
             let alreadyReported = signalled == 0 && kept.contains {
                 $0.op == .recovered && $0.reason == n.reason
@@ -147,7 +179,21 @@ public enum JournalRecovery {
         }
         // Future appends belong to the current session, not the last retained group's segment.
         if !retained.isEmpty { retained.append(JournalRecord(op: .open, boot: currentBoot, owner: owner)) }
-        report.rewriteFailed = !rewrite(paths: paths, boot: currentBoot, owner: owner, keeping: kept + retained)
+        let keeping = kept + forcedClosures + retained
+        let expected = [JournalRecord(op: .open, boot: currentBoot, owner: owner)] + keeping
+        func semanticRecords(_ records: [JournalRecord]) -> [JournalRecord] {
+            records.map { record in
+                var value = record
+                value.seq = 0
+                value.ts = 0
+                return value
+            }
+        }
+        // Persistent probe failures must not replace/fsync an identical journal on every attempt.
+        if snap.corrupt || snap.ignoredTail || semanticRecords(snap.records) != semanticRecords(expected) {
+            report.rewritePerformed = true
+            report.rewriteFailed = !rewrite(paths: paths, boot: currentBoot, owner: owner, keeping: keeping)
+        }
         return report
     }
 
@@ -188,12 +234,30 @@ public enum JournalRecovery {
 /// Ohm launch sequence (§ 6 "Ohm açılışı"): lock, recover leftovers, open the writer.
 /// Throws unless a valid, fsynced journal exists afterwards: effects stay off without one.
 public enum JournalSession {
-    public static func open(paths: JournalPaths, ownerLockRetry: Double = 5) throws -> (FreezeJournal, RecoveryReport) {
+    public static func open(paths: JournalPaths, ownerLockRetry: Double = 5,
+                            signaler: any RecoverySignaling = LiveRecoverySignaler()) throws -> (FreezeJournal, RecoveryReport) {
         let lock = try OwnerLock.acquire(paths: paths, retryFor: ownerLockRetry)
         let me = JournalPid(pid: getpid(), start: ProcessProbe.startAbs(getpid()) ?? 0)
-        let report = JournalRecovery.run(lock: lock, owner: me, consumeNotices: true)
+        let report = JournalRecovery.run(lock: lock, owner: me, consumeNotices: true, signaler: signaler)
         if report.rewriteFailed { throw JournalError.rewriteFailed }
-        let journal = try FreezeJournal(paths: paths, ownerLock: lock, owner: me)
+        let journal = try FreezeJournal(paths: paths, ownerLock: lock, owner: me,
+                                        recoveryReport: report, recoverySignaler: signaler)
         return (journal, report)
+    }
+
+    @discardableResult
+    public static func retryRecovery(journal: FreezeJournal) throws -> RecoveryReport? {
+        try journal.retryRecovery()
+    }
+
+    /// Shared CLI fallback when Ohm is absent. An explicit user request closes unverifiable
+    /// tracking with a durable reason, but never sends a signal without identity and boot proof.
+    public static func thawAll(paths: JournalPaths, signaler: any RecoverySignaling = LiveRecoverySignaler()) throws -> RecoveryReport {
+        let lock = try OwnerLock.acquire(paths: paths)
+        let owner = JournalPid(pid: getpid(), start: ProcessProbe.startAbs(getpid()) ?? 0)
+        let report = JournalRecovery.run(lock: lock, owner: owner, consumeNotices: false,
+                                         signaler: signaler, forceCloseUnverifiable: true)
+        if report.rewriteFailed { throw JournalError.rewriteFailed }
+        return report
     }
 }

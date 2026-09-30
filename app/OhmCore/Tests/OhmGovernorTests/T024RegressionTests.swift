@@ -46,7 +46,7 @@ struct T024RegressionTests {
         #expect(JournalReader.read(path: journal).openGroups().count == 1, "no ecoreOff while unresolved")
         rig.sig.bgOffFail.withLock { $0 = [] }
         await rig.gov.tick()
-        #expect(rig.sig.background.withLock { $0.contains { $0.0 == y && !$0.1 } })
+        #expect(waitUntil(1) { rig.sig.background.withLock { $0.contains { $0.0 == y && !$0.1 } } })
         #expect(JournalReader.read(path: journal).openGroups().isEmpty)
     }
 
@@ -175,13 +175,16 @@ struct T024RegressionTests {
     @Test("#5b: watcher that never takes thawd.lock → mode none (not a silent spawnedWatcher)")
     func r5_spawnTimeout() async throws {
         let dir = tempDir("r5b")
-        let before = Set(childrenOfTest(exe: "/bin/sleep"))
-        let prot = WatcherProtection(paths: JournalPaths(directory: dir), executable: "/bin/sleep", arguments: ["30"],
+        // A private copy: other suites spawn /bin/sleep concurrently and would look like leftovers.
+        let exe = dir + "/r5b-watcher"
+        try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: exe)
+        let before = Set(childrenOfTest(exe: exe))
+        let prot = WatcherProtection(paths: JournalPaths(directory: dir), executable: exe, arguments: ["30"],
                                      useLaunchAgent: false)
         let gov = Governor(config: testConfig(dir), journal: try openJournal(dir), appControl: FakeAppControl(FakeAppState()),
                            protection: prot, tree: FakeTree(TreeState()), probes: FakeProbes(ProbeState()))
         let mode = await gov.startProtection()
-        let leftover = Set(childrenOfTest(exe: "/bin/sleep")).subtracting(before)
+        let leftover = Set(childrenOfTest(exe: exe)).subtracting(before)
         for p in leftover { safeKill(p, SIGKILL); waitpid(p, nil, 0) }
         #expect(mode == .none)
         #expect(leftover.isEmpty, "the unready watcher child must be killed")
