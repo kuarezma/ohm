@@ -6,7 +6,7 @@ public struct RecoveryReport: Sendable {
     /// Groups from another boot session were discarded without any signal (§ 5 rule 2).
     public var discardedForBoot = false
     /// Groups whose boot session could not be established (no `open` record, or the current boot
-    /// is unreadable). Not a match (D3): no signal; left to the launch-time SSTOP scan and the user.
+    /// is unreadable). Not a match (D3): no signal; kept with the original boot and retried.
     public var unverifiedBoot: [JournalPid] = []
     public var corrupt = false
     public var ignoredTail = false
@@ -25,15 +25,23 @@ public struct RecoveryReport: Sendable {
     public var openGroupsFound: Int = 0
     /// The journal could not be rewritten; the caller must not enable effects (T-024 #2).
     public var rewriteFailed = false
+
+    /// Watchers must keep protecting every effect whose undo could not be verified.
+    public var needsRetry: Bool { rewriteFailed || !unresolved.isEmpty || !unverifiedBoot.isEmpty }
 }
 
 /// How recovery reaches processes; tests inject failures.
 public protocol RecoverySignaling {
+    func bootSessionUUID() -> String?
     func identityStatus(_ id: ProcessIdentity) -> ProcessProbe.IdentityStatus
     /// Returns 0 or errno.
     func sendCont(_ pid: Int32) -> Int32
     /// Removes PRIO_DARWIN_BG. Returns 0 or errno.
     func clearBackground(_ pid: Int32) -> Int32
+}
+
+extension RecoverySignaling {
+    public func bootSessionUUID() -> String? { ProcessProbe.bootSessionUUID() }
 }
 
 public struct LiveRecoverySignaler: RecoverySignaling {
@@ -61,7 +69,7 @@ public enum JournalRecovery {
         let paths = lock.paths
         var report = RecoveryReport()
         let snap = JournalReader.read(path: paths.journal)
-        let currentBoot = ProcessProbe.bootSessionUUID()
+        let currentBoot = signaler.bootSessionUUID()
         report.corrupt = snap.corrupt
         report.ignoredTail = snap.ignoredTail
         report.notices = snap.records.filter { $0.op == .recovered }
@@ -69,11 +77,22 @@ public enum JournalRecovery {
         let groups = snap.openGroups()
         report.openGroupsFound = groups.count
         var retained: [JournalRecord] = []
+        func retain(_ group: OpenGroup, pids: [JournalPid]) {
+            // Preserve segment provenance: a fresh current-boot `open` must never turn an unknown
+            // or different boot into a match on the next recovery. Keep each line below 4 KB.
+            retained.append(JournalRecord(op: .open, boot: group.boot, owner: owner))
+            for start in stride(from: 0, to: pids.count, by: 32) {
+                let chunk = Array(pids[start..<min(start + 32, pids.count)])
+                retained.append(JournalRecord(op: group.kind == .freeze ? .freeze : .ecore,
+                                              group: group.group, app: group.app, origin: "recovery", pids: chunk))
+            }
+        }
         for g in groups {
             // D3: start times are only comparable within one boot session. Unknown on either side
             // is not a match.
             guard let b = g.boot, let cur = currentBoot else {
                 report.unverifiedBoot += g.pids
+                retain(g, pids: g.pids)
                 continue
             }
             guard b == cur else {
@@ -109,8 +128,7 @@ public enum JournalRecovery {
             }
             if !pending.isEmpty {
                 report.unresolved += pending
-                retained.append(JournalRecord(op: g.kind == .freeze ? .freeze : .ecore, group: g.group, app: g.app,
-                                              origin: "recovery", pids: pending))
+                retain(g, pids: pending)
             }
         }
 
@@ -121,8 +139,14 @@ public enum JournalRecovery {
         if signalled > 0 || !report.unverifiedBoot.isEmpty {
             var n = JournalRecord(op: .recovered, count: signalled, apps: report.apps)
             if !report.unverifiedBoot.isEmpty { n.reason = "unverifiedBoot:\(report.unverifiedBoot.count)" }
-            kept.append(n)
+            // An unreadable boot can last indefinitely; retries must not append the same notice forever.
+            let alreadyReported = signalled == 0 && kept.contains {
+                $0.op == .recovered && $0.reason == n.reason
+            }
+            if !alreadyReported { kept.append(n) }
         }
+        // Future appends belong to the current session, not the last retained group's segment.
+        if !retained.isEmpty { retained.append(JournalRecord(op: .open, boot: currentBoot, owner: owner)) }
         report.rewriteFailed = !rewrite(paths: paths, boot: currentBoot, owner: owner, keeping: kept + retained)
         return report
     }

@@ -32,13 +32,17 @@ public final class FreezeJournal: FreezeJournaling {
         self.paths = paths
         self.ownerLock = ownerLock
         self.owner = owner
-        boot = ProcessProbe.bootSessionUUID()
+        let snapshot = JournalReader.read(path: paths.journal)
+        let currentBoot = ProcessProbe.bootSessionUUID()
+        // The writer must append under a verified open segment, even if boot probing starts
+        // succeeding between recovery and opening this writer.
+        boot = snapshot.records.last(where: { $0.op == .open })?.boot == currentBoot ? currentBoot : nil
         if let d = FileManager.default.contents(atPath: paths.journal), let last = d.last, last != 0x0A {
             throw JournalError.unterminatedTail
         }
         fd = open(paths.journal, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o600)
         if fd < 0 { throw JournalError.open(errno) }
-        seq = JournalReader.read(path: paths.journal).lastSeq
+        seq = snapshot.lastSeq
     }
 
     deinit { if fd >= 0 { close(fd) } }

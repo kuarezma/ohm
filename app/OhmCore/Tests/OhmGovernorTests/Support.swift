@@ -342,6 +342,7 @@ func testConfig(_ dir: String) -> GovernorConfig {
     var c = GovernorConfig()
     c.healthFile = dir + "/freeze-health.json"
     c.ownBundlePath = nil
+    c.appleAllowlist.insert("com.apple.TextEdit")
     return c
 }
 

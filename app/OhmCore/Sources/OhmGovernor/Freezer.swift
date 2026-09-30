@@ -21,6 +21,7 @@ struct FrozenGroup: Sendable {
 enum FreezeFailure: Error {
     case journal(JournalError)
     case identityMismatch(Int32)
+    case identityUnknown(Int32, Int32)
     case signal(Int32, Int32)
     case tableFull
     case veto([FreezeVeto])
@@ -105,11 +106,14 @@ final class Freezer {
     /// Identity check (D3) → thaw table → SIGSTOP → `stopped`. A helper that vanished between
     /// enumeration and here is skipped (nothing to stop; recovery re-verifies identity anyway).
     private func stopOne(_ p: ProcessIdentity, isRoot: Bool, _ stopped: inout [ProcessIdentity]) throws {
-        guard let s = signaler.startAbs(p.pid) else {
+        switch signaler.identityStatus(p) {
+        case .match: break
+        case .gone:
             if isRoot { throw FreezeFailure.identityMismatch(p.pid) }
             return
+        case .mismatch: throw FreezeFailure.identityMismatch(p.pid)
+        case .unknown(let error): throw FreezeFailure.identityUnknown(p.pid, error)
         }
-        guard s == p.startAbsTime else { throw FreezeFailure.identityMismatch(p.pid) }
         guard ThawTable.add(p) else { throw FreezeFailure.tableFull }
         let rc = signaler.send(p.pid, SIGSTOP)
         if rc != 0 {
@@ -128,11 +132,15 @@ final class Freezer {
             var pending: [Int32] = []
             var gone: Set<Int32> = []
             for (i, p) in stopped.enumerated() {
-                if !signaler.matches(p) {
+                switch signaler.identityStatus(p) {
+                case .gone, .mismatch:
                     if i == 0 { throw FreezeFailure.identityMismatch(p.pid) }
                     gone.insert(p.pid)
-                } else if !signaler.isStopped(p.pid) {
-                    pending.append(p.pid)
+                case .unknown(let error):
+                    // Keep the entire stopped list for rollback; unreadable is not gone.
+                    throw FreezeFailure.identityUnknown(p.pid, error)
+                case .match:
+                    if !signaler.isStopped(p.pid) { pending.append(p.pid) }
                 }
             }
             if !gone.isEmpty {

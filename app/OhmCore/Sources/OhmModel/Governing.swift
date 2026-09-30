@@ -20,6 +20,13 @@ extension EffectOrigin {
     }
 
     public var isRule: Bool { if case .rule = self { true } else { false } }
+
+    public var isAutomatic: Bool {
+        switch self {
+        case .rule, .runaway: true
+        case .manual, .cli: false
+        }
+    }
 }
 
 /// Journal `reason` values (ADR 0004 § 5). `rollback` is used by the § 4 pseudo-code;
@@ -42,7 +49,7 @@ public enum FreezeVeto: String, Sendable, Codable, Hashable, CaseIterable {
     // General state.
     case powerOffInProgress, postWakeQuiet, shuttingDown, protectionNotReady, journalUnwritable
     // Tree (§ 3).
-    case unstableTree, unsafeTopology
+    case unstableTree, unsafeTopology, unverifiedTopology
     // Procedure (§ 4).
     case superseded, notDesired, busy, tableFull
 }

@@ -102,7 +102,7 @@ public actor Governor: Governing {
         policy = SafetyPolicy(probes: probes, config: config, health: health)
         freezer = Freezer(signaler: signaler, tree: tree, policy: policy, config: config)
         lane = ECoreLane(signaler: signaler)
-        if journal == nil { disabledReason = .journalUnwritable }
+        if journal?.boot == nil { disabledReason = .journalUnwritable }
     }
 
     // MARK: Status (UI, CLI `ohm status`, tests)
@@ -281,9 +281,24 @@ public actor Governor: Governing {
         case .didWake:
             generation &+= 1
             postWakeUntil = Date().addingTimeInterval(config.postWakeQuiet)
-            for g in groups.values where !signaler.matches(g.root) { thawGroup(g.id, reason: .terminated) }
             for g in groups.values {
-                for h in g.helpers where !signaler.matches(h) { processExited(h.pid) }
+                switch signaler.identityStatus(g.root) {
+                case .gone, .mismatch:
+                    thawGroup(g.id, reason: .terminated)
+                    continue
+                case .unknown:
+                    thawGroup(g.id, reason: .verifyFailed)
+                    continue
+                case .match: break
+                }
+                for h in g.helpers {
+                    switch signaler.identityStatus(h) {
+                    case .gone, .mismatch: processExited(h.pid)
+                    case .unknown:
+                        thawGroup(g.id, reason: .verifyFailed)
+                    case .match: break
+                    }
+                }
             }
             expireByWallClock()
         }
@@ -303,7 +318,7 @@ public actor Governor: Governing {
         }
         expireByWallClock()
         for (root, g) in lane.groups {
-            guard let journal, signaler.matches(g.app.identity) else { continue }
+            guard let journal, signaler.identityStatus(g.app.identity) == .match else { continue }
             let known = Set(g.pids.map(\.pid))
             let new = tree.helpers(of: g.app.identity, bundlePath: g.app.bundlePath).filter { !known.contains($0.pid) }
             if !new.isEmpty {
@@ -393,6 +408,7 @@ public actor Governor: Governing {
                 disableEffects()
                 return .rolledBack(.rollback, detail: "journal: \(e)")
             case .identityMismatch(let p): return .rolledBack(.rollback, detail: "identity mismatch pid \(p)")
+            case .identityUnknown(let p, let error): return .rolledBack(.rollback, detail: "identity unreadable pid \(p) errno \(error)")
             case .signal(let p, let e): return .rolledBack(.rollback, detail: "kill(\(p)) errno \(e)")
             case .verifyTimeout(let ps): return .rolledBack(.verifyFailed, detail: "not stopped: \(ps)")
             }
@@ -420,7 +436,12 @@ public actor Governor: Governing {
         } else if !manualFreezes.contains(op.app.identity) {
             v.append(.notDesired)
         }
-        guard signaler.matches(op.app.identity) else { return v + [.notRunning] }
+        switch signaler.identityStatus(op.app.identity) {
+        case .match: break
+        case .gone, .mismatch: return v + [.notRunning]
+        case .unknown: return v + [.safetyProbeFailed]
+        }
+        v += policy.topologyVetoes(op.app, origin: op.origin)
         v += policy.scopeVetoes(op.app, forRule: op.byRule, confirmedBackground: op.confirmedBackground)
         // D9: frontmost is an absolute veto; an activation seen during this operation counts too.
         if appControl.isActive(pid: pid) || (lastActive[pid].map { $0 > op.startedAt } ?? false) {
@@ -446,7 +467,7 @@ public actor Governor: Governing {
 
     /// Only if Ohm hid it; never touch what the user hid (§ 4 restoreHide).
     private func restoreHide(_ op: FreezeOp, hiddenByOhm: Bool) {
-        if hiddenByOhm, signaler.matches(op.app.identity), !appControl.isActive(pid: op.app.pid) {
+        if hiddenByOhm, signaler.identityStatus(op.app.identity) == .match, !appControl.isActive(pid: op.app.pid) {
             appControl.unhide(pid: op.app.pid)
         }
     }
@@ -499,6 +520,11 @@ public actor Governor: Governing {
             return
         }
         for (id, var g) in groups where g.helpers.contains(where: { $0.pid == pid }) {
+            guard let helper = g.helpers.first(where: { $0.pid == pid }) else { continue }
+            switch signaler.identityStatus(helper) {
+            case .gone, .mismatch: break
+            case .unknown, .match: continue
+            }
             g.helpers.removeAll { $0.pid == pid }
             groups[id] = g
             ThawTable.remove(pid)
@@ -631,6 +657,7 @@ public actor Governor: Governing {
     /// Returns nil when nothing needed doing or it was applied/extended; `.vetoed` otherwise.
     private func ensureECore(app: RunningAppInfo, key: AppKey?, origin: EffectOrigin, params: ECoreParams) -> GovernorOutcome? {
         let pid = app.pid
+        lane.updateParams(root: pid, params: params)
         if params.whileFrontmost == .release {
             let recentlyActive = lastActive[pid].map { Date().timeIntervalSince($0) < config.eCoreFrontmostDelay } ?? false
             if appControl.isActive(pid: pid) || recentlyActive {
@@ -643,7 +670,11 @@ public actor Governor: Governing {
         if journal == nil || disabledReason != nil { v.append(.journalUnwritable) }
         if powerOffInProgress { v.append(.powerOffInProgress) }
         if shuttingDown { v.append(.shuttingDown) }
-        if !signaler.matches(app.identity) { v.append(.notRunning) }
+        switch signaler.identityStatus(app.identity) {
+        case .match: break
+        case .gone, .mismatch: v.append(.notRunning)
+        case .unknown: v.append(.safetyProbeFailed)
+        }
         // Safer choice (ADR silent): the static scope gate, minus the `.regular` requirement, also
         // applies to E-core so system UI processes never get PRIO_DARWIN_BG.
         v += policy.scopeVetoes(app, forRule: false, confirmedBackground: true)

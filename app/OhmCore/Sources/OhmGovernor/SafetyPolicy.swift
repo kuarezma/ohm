@@ -149,6 +149,8 @@ public final class FreezeHealthStore {
 
 /// ADR 0004 § 2: scope gate and dynamic vetoes.
 public final class SafetyPolicy {
+    /// T-013 real-app spike; expansion requires recorded topology and recovery evidence (ADR 0004 § 3).
+    static let verifiedFreezeTopologies: Set<String> = ["com.apple.TextEdit"]
     let probes: any SafetyProbing
     let config: GovernorConfig
     let health: FreezeHealthStore
@@ -157,6 +159,14 @@ public final class SafetyPolicy {
         self.probes = probes
         self.config = config
         self.health = health
+    }
+
+    func topologyVetoes(_ app: RunningAppInfo, origin: EffectOrigin) -> [FreezeVeto] {
+        guard origin.isAutomatic else { return [] }
+        guard let bundle = app.bundleID, Self.verifiedFreezeTopologies.contains(bundle) else {
+            return [.unverifiedTopology]
+        }
+        return []
     }
 
     /// Static part of the scope gate. Also used at rule registration (ADR 0003) so a target that can
